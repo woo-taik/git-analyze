@@ -1,0 +1,35 @@
+{
+  "name": "git-analyze",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=11 <12"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "build:watch": "tsc -b --watch",
+    "dev:api": "node --conditions=development --env-file-if-exists=.env --import tsx --watch apps/api/src/index.ts",
+    "cli": "node --conditions=development --env-file-if-exists=.env --import tsx apps/cli/src/index.ts",
+    "worker:check": "node --conditions=development --env-file-if-exists=.env --import tsx apps/worker/src/index.ts --check",
+    "start:api": "node --env-file-if-exists=.env apps/api/dist/index.js",
+    "start:worker": "node --env-file-if-exists=.env apps/worker/dist/index.js",
+    "test": "pnpm build && vitest run",
+    "check": "pnpm test",
+    "db:generate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs generate --config=packages/database/drizzle.config.ts",
+    "db:migrate": "node --env-file-if-exists=.env node_modules/drizzle-kit/bin.cjs migrate --config=packages/database/drizzle.config.ts",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": {
+    "@git-analyze/config": "workspace:*",
+    "@types/node": "24.19.2",
+    "drizzle-kit": "0.31.11",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  }
+}
