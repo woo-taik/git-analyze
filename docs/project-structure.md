@@ -1,6 +1,6 @@
 # 프로젝트 구조와 개발 방법
 
-기준일: 2026-10-20, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
+기준일: 2026-10-21, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
 
 ## 1. 구조의 목적
 
@@ -22,7 +22,9 @@ apps/
   cli/src/
     index.ts                     Nest standalone 진입점과 종료
     cli.module.ts
-    command.service.ts           help·doctor·providers 명령
+    command.service.ts           help·doctor·providers·collect 명령
+    collect-options.ts           수집 옵션·경로 필터·KST 기간 계산
+    history-report.ts            JSON·Markdown 출력과 새 폴더 생성
   worker/src/
     index.ts                     Nest standalone 진입점
     worker.module.ts
@@ -39,6 +41,7 @@ packages/
   config/src/index.ts            환경 설정 검증과 기본값
   providers/src/
     catalog.ts                   공급자별 문서상 기능과 구현 상태
+    git/local-history.ts         로컬 커밋·변경 파일 수집
     index.ts                     공개 export
   database/
     src/schema.ts                소유자·저장소·원본 버전 테이블
@@ -46,6 +49,7 @@ packages/
     migrations/                  초기 SQL과 Drizzle metadata
     drizzle.config.ts            migration 생성·적용 설정
 tests/scaffold.test.ts           API 경계·설정 비밀 값·워커 시작 검증
+tests/collect.test.ts            실제 Git fixture·기간·출력·CLI 통합 검증
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -80,6 +84,9 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `help`: 사용법.
 - `doctor`: Node·Git 실행 여부와 DB 설정 유무. DB 접속 검사는 수행하지 않는다.
 - `providers`: 공급자 카탈로그. 실제 연결 성공을 의미하지 않는다.
+- `collect`: 로컬 레포와 기간을 검증하고 이력을 수집해 JSON·Markdown 파일을 생성한다. DB와 LLM을 사용하지 않는다.
+
+호출 흐름은 `CommandService → parseCollectOptions → collectLocalHistory → writeHistoryReports`다. `--repo`는 필수이며 `--period`는 `1w`·`1m`·`3m`·`6m`, `--ref`는 기본 `HEAD`다. `--path`는 Git 저장소 루트 기준 상대 경로를 지정하고, `--output`은 새 출력 폴더를 지정한다.
 
 ### 워커
 
@@ -111,9 +118,13 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 
 ### providers
 
-GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그를 제공한다. 문서상 capability와 구현 상태를 구분하며 현재 `implementationStatus`는 모두 `planned`다.
+GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그와 로컬 이력 수집을 제공한다. 문서상 capability와 구현 상태를 구분한다. 현재 `local`은 `implemented`, 원격 어댑터는 `planned`다.
 
-향후 `git/`, `github/`, `sourcecommit/` 수집 모듈을 이 패키지 안에 추가한다. 해당 모듈은 아직 없다. 수집 결과를 공통 모델로 정규화해 이후 분석이 공급자별로 갈라지지 않게 한다.
+`git/local-history.ts`는 ref를 OID로 고정하고 커미터 날짜의 `[start, end)` 범위로 커밋을 선택한다. NUL 구분자를 사용해 여러 줄 메시지와 한글·공백 파일명을 읽는다. 변경 파일은 첫 부모와 비교하며 이름 변경 탐지는 끈다. shallow 이력과 1,000건 초과는 조용히 잘라내지 않고 거부한다.
+
+`--path frontend`는 diff의 경로 범위만 제한하고 변경 파일이 없는 커밋을 제외한다. 따라서 부모 관계와 메시지는 유지되고, 출력 파일 목록에는 해당 경로만 남는다. Git 경로는 리터럴로 해석해 `frontend-backup`이나 glob 패턴을 잘못 포함하지 않는다. 1,000건 상한은 경로 필터 전 기간 내 검사 대상에 적용한다.
+
+현재는 전체 `RepositoryReader`의 증분·patch 구현이 아닌 로컬 기간 수집 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
 
 ### database
 
@@ -156,6 +167,8 @@ pnpm install --frozen-lockfile
 pnpm cli help
 pnpm cli doctor
 pnpm cli providers
+pnpm cli collect --repo "C:\dev\git-analyze" --period 1w
+pnpm cli collect --repo "C:\dev\law" --period 1w --path frontend
 pnpm worker:check
 pnpm dev:api
 ```
@@ -181,9 +194,11 @@ pnpm start:api
 - 별도 Nest CLI·번들러·빌드 오케스트레이터는 아직 도입하지 않았다.
 - `check`는 빌드 후 Vitest를 실행한다.
 
-현재 기본 테스트 다섯 개는 생존/준비 상태 구분, 공급자의 문서상 기능/미구현 상태 구분, 미구현 수집 요청 거부, 설정 오류의 비밀 값 비노출, 핸들러 없는 워커의 연결 전 거부를 확인한다.
+기본 테스트 다섯 개는 생존/준비 상태 구분, 공급자의 문서상 기능/미구현 상태 구분, 미구현 HTTP 수집 요청 거부, 설정 오류의 비밀 값 비노출, 핸들러 없는 워커의 연결 전 거부를 확인한다.
 
-이 테스트는 실제 Git 수집·LLM 품질·PostgreSQL 쿼리·운영 성능을 검증한 것이 아니다.
+Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거 날짜의 자식 커밋·root와 merge·rename·한글 경로·작업 트리 보존·shallow 거부·출력 덮어쓰기 방지·빌드된 CLI 실행을 확인한다. 외부 GitHub·SourceCommit 연결, LLM 품질, PostgreSQL 쿼리와 운영 성능은 검증하지 않는다.
+
+경로 필터 테스트는 혼합 커밋에서 대상 파일만 남기기, 다른 폴더 전용 커밋 제외, 유사한 폴더명 제외, 경로 밖으로 이동한 파일의 삭제 기록, merge 포함, 특수문자 경로의 리터럴 처리, 경로 정규화·이탈 거부와 실제 CLI 전달을 확인한다.
 
 ## 8. DB와 migration
 
@@ -201,9 +216,9 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 ## 9. 현재 구현 범위
 
-완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본 테스트.
+완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git 통합 테스트.
 
-미구현: 실제 Git 수집·GitHub API·SourceCommit 인증 연결·LLM 호출·증분 캐시·기간 계산·이력서 생성·인증과 소유권 검사·검토 UI.
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·증분 캐시·이력서 생성·인증과 소유권 검사·검토 UI. 로컬 CLI는 모든 작성자의 커밋 메타데이터와 변경 파일만 수집하며, patch·개인 기여 판단·업무 완료 판단은 수행하지 않는다.
 
 ## 10. 관련 문서
 

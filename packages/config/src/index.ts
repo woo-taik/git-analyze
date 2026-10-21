@@ -36,7 +36,6 @@ export function loadConfig(env: Readonly<Record<string, string | undefined>> = p
         throw new Error('invalid PostgreSQL URL');
       }
     } catch {
-      // Never echo a connection string containing credentials.
       throw new Error('DATABASE_URL must be a valid PostgreSQL connection URL');
     }
   }

@@ -25,7 +25,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-Git CLI 기반 수집과 Octokit 보강, React + Vite 검토 UI, 실제 LLM 어댑터는 후속 구현이다.
+로컬 Git 이력 수집은 CLI에서 실행할 수 있다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI, 실제 LLM 어댑터는 후속 구현이다.
 
 ## 시작
 
@@ -34,10 +34,31 @@ Node.js 24와 pnpm 11이 필요하다. 루트에서 실행한다.
 ```sh
 pnpm install --frozen-lockfile
 pnpm cli doctor
+pnpm cli collect --repo "C:\dev\git-analyze" --period 1w
 pnpm dev:api
 ```
 
 설정을 바꾸려면 `.env.example`을 `.env`로 복사한다. `.env` 없이도 CLI 진단과 기본 API는 실행된다.
+
+## 특정 로컬 레포 수집
+
+```powershell
+pnpm cli collect --repo "C:\dev\대상레포" --period 1w
+pnpm cli collect --repo "C:\dev\대상레포" --period 1m --ref main --output ".data\my-history"
+pnpm cli collect --repo "C:\dev\law" --period 1w --path frontend
+```
+
+- `--repo`: 이미 로컬에 있는 Git 저장소 경로. GitHub·SourceCommit에서 clone한 레포 모두 가능하다.
+- `--period`: `1w`(기본), `1m`, `3m`, `6m`. Asia/Seoul 기준 과거 구간이며 월말을 보정한다.
+- `--ref`: 기본 `HEAD`. 지정한 ref에서 도달 가능한 모든 작성자의 커밋을 수집한다.
+- `--path`: Git 저장소 루트 기준 상대 경로. `frontend`면 해당 폴더를 변경한 커밋만 남기고 파일 목록도 `frontend/`로 제한한다. 경로를 생략하거나 `.`을 주면 전체 저장소다.
+- `--output`: 새 출력 폴더. 생략하면 `.data/collections/<실행별 ID>`에 저장한다. 기존 폴더는 덮어쓰지 않는다.
+
+결과는 `history.json`과 `history.md`다. 커미터 날짜의 `[시작, 종료)`로 선택하고 작성자·메시지·변경 파일을 담는다. 병합 변경은 첫 부모와 비교하며 이름 변경은 삭제·추가로 기록한다.
+
+`--repo "C:\dev\law\frontend"`를 입력해도 저장소 루트는 `C:\dev\law`다. 따라서 frontend만 원하면 `--path frontend`를 함께 지정한다. 경로는 글자 그대로 처리하며 절대 경로와 `..`은 허용하지 않는다. 삭제된 파일·폴더도 과거 이력에서 찾을 수 있다. 혼합 커밋의 메시지는 원문을 유지하고 파일 목록만 제한한다.
+
+DB·LLM 키 없이 실행한다. checkout·fetch·원격 접속·patch 수집·작성자 필터는 수행하지 않는다. 빈 저장소나 존재하지 않는 ref, shallow 이력, 경로 필터 전 기간 내 검사 대상 1,000건 초과는 오류로 알린다. 수집 결과는 이력서 성과 분석 전의 원본 기록이다.
 
 - `GET /health`: 프로세스 생존 확인.
 - `GET /ready`: 업무 파이프라인 미구현 상태이므로 현재 503을 반환.
@@ -52,7 +73,7 @@ pnpm start:api
 
 DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db:migrate`를 실행한다. 생성 SQL은 `packages/database/migrations`에 있다.
 
-현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 초기 DB schema/migration, 기본 검증.
-미구현: 실제 이력 수집·LLM 분석·기간 계산·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
+현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 초기 DB schema/migration, 기본·Git 통합 테스트.
+미구현: 원격 동기화·LLM 분석·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
-작성 기준일: 2026-10-20, Asia/Seoul.
+작성 기준일: 2026-10-21, Asia/Seoul.

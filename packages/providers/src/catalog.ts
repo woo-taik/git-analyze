@@ -11,7 +11,7 @@ const gitOnly = {
   webhooks: 'unknown',
 } as const satisfies RepositoryCapabilities;
 
-// This is an integration plan. Runtime permissions must be probed per connection.
+
 export const PROVIDER_CATALOG = [
   {
     id: 'github', label: 'GitHub', transports: ['git', 'api'], implementationStatus: 'planned',
@@ -31,7 +31,7 @@ export const PROVIDER_CATALOG = [
   },
   {
     id: 'local', label: 'Local Git repository', transports: ['filesystem'],
-    implementationStatus: 'planned',
+    implementationStatus: 'implemented',
     documentedCapabilities: {
       ...gitOnly, pull_requests: 'unsupported', issues: 'unsupported',
       reviews: 'unsupported', checks: 'unsupported', webhooks: 'unsupported',

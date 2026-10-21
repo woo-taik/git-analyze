@@ -7,7 +7,6 @@ export class HealthController {
     return { status: 'ok', service: 'git-analyze-api' };
   }
 
-  // Liveness is separate from business readiness while the pipeline is scaffolded.
   @Get('ready')
   @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
   ready() {
