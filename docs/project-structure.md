@@ -22,11 +22,12 @@ apps/
   cli/src/
     index.ts                     Nest standalone 진입점과 종료
     cli.module.ts
-    command.service.ts           help·doctor·providers·collect·prepare 명령
+    command.service.ts           help·doctor·providers·collect·prepare·evidence 명령
     collect-options.ts           수집 옵션·경로 필터·KST 기간 계산
     history-report.ts            수집 Markdown·공용 JSON/Markdown 새 폴더 출력
     prepare.ts                   저장된 이력 입력 검증·후보 선별 조립
     candidate-report.ts          후보·검토·제외 Markdown과 원본 출처
+    evidence.ts                  후보 입력·수동 묶기·근거 추출 조립·캐시·보고서
   worker/src/
     index.ts                     Nest standalone 진입점
     worker.module.ts
@@ -40,11 +41,14 @@ packages/
     llm.ts                       분석·문장 생성 계약과 토큰 사용량
     jobs.ts                      작업 이름과 payload
     prepare-candidates.ts        이메일·검토 사유·참조 묶기·수동 선별 규칙
+    evidence-extraction.ts       로컬 근거 계약·발췌 우선순위·바이트 예산
     index.ts                     공개 export
   config/src/index.ts            환경 설정 검증과 기본값
   providers/src/
     catalog.ts                   공급자별 문서상 기능과 구현 상태
     git/local-history.ts         로컬 커밋·변경 파일 수집
+    git/command.ts               shell 없는 Git 실행·출력 크기/시간 제한
+    git/local-evidence.ts        객체 검증·첫 부모 raw diff·제한된 patch 읽기
     index.ts                     공개 export
   database/
     src/schema.ts                소유자·저장소·원본 버전 테이블
@@ -54,6 +58,7 @@ packages/
 tests/scaffold.test.ts           API 경계·설정 비밀 값·워커 시작 검증
 tests/collect.test.ts            실제 Git fixture·기간·출력·CLI 통합 검증
 tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI 통합 검증
+tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통합 검증
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -90,10 +95,15 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `providers`: 공급자 카탈로그. 실제 연결 성공을 의미하지 않는다.
 - `collect`: 로컬 레포와 기간을 검증하고 이력을 수집해 JSON·Markdown 파일을 생성한다. DB와 LLM을 사용하지 않는다.
 - `prepare`: 저장한 `history.json`과 작성자 이메일/별칭으로 후보·검토·제외를 선별하고 JSON·Markdown을 생성한다. Git·DB·LLM에 연결하지 않는다.
+- `evidence`: 저장한 후보에서 그룹 하나 또는 명시한 커밋들을 선택하고, 로컬 객체 검증 후 크기를 제한한 patch 근거와 추출 캐시를 생성한다. DB·LLM을 사용하지 않는다.
 
 호출 흐름은 `CommandService → parseCollectOptions → collectLocalHistory → writeHistoryReports`다. `--repo`는 필수이며 `--period`는 `1w`·`1m`·`3m`·`6m`, `--ref`는 기본 `HEAD`다. `--path`는 Git 저장소 루트 기준 상대 경로를 지정하고, `--output`은 새 출력 폴더를 지정한다.
 
 후보 선별 흐름은 `CommandService → executePrepare → prepareCandidates → writeCandidateReports → writeReportPair`다. `prepare.ts`가 JSON schema·날짜 범위·OID·파일 상태·입력 상한을 검사하고, core가 외부 연결 없이 규칙을 적용한다. `--input`, `--author`는 필수이며 `--alias`와 `--author`를 반복해 명시적으로 동일인 이메일을 선택한다. `--include`/`--exclude`는 전체 OID로 재선별한다. 출력마다 새 폴더를 만들어 원본과 기존 결과를 보존한다.
+
+근거 추출 흐름은 `CommandService → executeEvidence → inspectLocalEvidence → 캐시 조회 또는 buildLocalEvidence/readLocalPatch → writeReportPair`다. 후보의 원본을 기존 history parser로 검증하고, 저장된 명시적 override로 규칙을 다시 계산한다. `--group`과 반복 `--commit`은 상호 배타적이며 최대 20커밋을 선택한다. runtime 입력 검증과 파일 I/O는 CLI, 선택·예산 정책은 core, Git 객체·patch 읽기는 providers가 담당한다.
+
+캐시 재사용 전에도 원본 메타데이터·ref 기준 도달 가능성·파일 목록·blob 존재를 확인한다. 추출 키와 패킷 내용 hash는 별도다. 실행/관측 시각·출력 경로·기간은 패킷 내용에 넣지 않고 보고서의 출처 정보로 둔다. 서로 다른 clone은 별도 범위이며 로컬 범위 식별은 HTTP 인증·인가를 대신하지 않는다.
 
 ### 워커
 
@@ -115,10 +125,13 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `LlmProvider`, `LlmUsage`: 분석·생성 계약과 토큰 사용량.
 - `JobPayload`: 작업의 소유자·저장소·대상·입력 버전.
 - `prepareCandidates`: 순수 함수로 이메일 정규화·동일 OID 중복 제거·기여 기록 구분·검토 사유·명시적 참조 묶기·수동 선별을 계산한다. 입력·원본·선별 사유를 보존하며 `candidates-v1` 규칙 버전을 출력한다.
+- `LocalEvidencePacket`, `buildLocalEvidence`: 커밋 메시지·파일 근거 ID·첫 부모 patch 위치·생략 사유·완전성을 기록한다. 읽기 콜백을 주입받고 파일/전체 바이트·파일 수 예산을 적용한다. Node 파일 시스템·해시·Git 실행에 직접 의존하지 않는다.
 
 작성자 일치는 후보, 공동 작성 trailer와 커미터만 일치는 검토, 미일치는 제외다. 병합·생성 경로만 변경·여러 참조 등은 검토에 남기며 자동으로 성과를 확정하지 않는다. 단일 명시적 이슈 참조가 같은 경우에만 같은 상태 안에서 묶는다. 참조가 없으면 커밋별 후보로 유지한다. 수동 포함도 기여 구분을 덮어쓰지 않는다. 후보 묶음은 영속 `WorkItem`·승인 기록·내용 hash 캐시가 아니다.
 
 인터페이스와 타입 선언은 실제 수집기나 LLM 연결이 구현됐다는 뜻이 아니다.
+
+`LocalEvidencePacket`은 로컬 CLI의 추출 형식이다. 기존 `EvidencePacket`의 다중 사용자 소유자·저장소·업무 ID가 부여된 분석 입력으로 아직 변환하지 않는다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않는다.
 
 ### config
 
@@ -134,7 +147,11 @@ GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그와 로
 
 `--path frontend`는 diff의 경로 범위만 제한하고 변경 파일이 없는 커밋을 제외한다. 따라서 부모 관계와 메시지는 유지되고, 출력 파일 목록에는 해당 경로만 남는다. Git 경로는 리터럴로 해석해 `frontend-backup`이나 glob 패턴을 잘못 포함하지 않는다. 1,000건 상한은 경로 필터 전 기간 내 검사 대상에 적용한다.
 
-현재는 전체 `RepositoryReader`의 증분·patch 구현이 아닌 로컬 기간 수집 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
+`git/command.ts`는 두 수집 흐름이 공유한다. stdout을 바이트 단위로 제한해 prefix만 보관하고 상한/30초 타임아웃에 프로세스를 종료한다. ambient `GIT_*` 환경은 제거하고 네트워크·lazy fetch·외부 diff·textconv를 사용하지 않는다.
+
+`git/local-evidence.ts`는 실제 객체와 저장된 메타데이터를 대조하고 root/첫 부모 raw diff를 읽는다. NUL·비 UTF-8·submodule을 구분하며 Node 프로세스에 blob 전체를 적재하지 않는다. patch의 hunk 위치는 유지하고 속성에 의존하는 함수명 suffix는 제거한다. Git 버전·설정·유효 속성도 캐시 식별에 반영한다. 옵션 의미는 [Git diff 문서](https://git-scm.com/docs/git-diff), 로컬 공통 디렉터리는 [Git rev-parse 문서](https://git-scm.com/docs/git-rev-parse)를 참고한다.
+
+현재는 전체 `RepositoryReader` 어댑터가 아닌 로컬 기간 수집·patch 추출 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
 
 ### database
 
@@ -180,6 +197,7 @@ pnpm cli providers
 pnpm cli collect --repo "C:\dev\git-analyze" --period 1w
 pnpm cli collect --repo "C:\dev\law" --period 1w --path frontend
 pnpm cli prepare --input ".data\my-history\history.json" --author "me@example.com" --alias "work@example.com"
+pnpm cli evidence --input ".data\my-candidates\candidates.json" --commit <전체 OID>
 pnpm worker:check
 pnpm dev:api
 ```
@@ -213,6 +231,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 
 후보 선별 테스트는 작성자/커미터/공동 작성 구분, 명시적 별칭만 매핑, 병합·낮은 우선순위·빈 변경 검토, 참조별 묶기와 중복 그룹 방지, 수동 재선별·원본 보존, 중복 관측과 내용 충돌, 잘못된 입력 거부를 확인한다. 실제 레포가 없는 경로를 담은 fixture로 빌드된 Nest CLI를 실행해 오프라인 동작, Markdown escape, 원본 바이트 보존과 출력 덮어쓰기 방지를 검증한다.
 
+근거 테스트는 실제 Git fixture에서 root·첫 부모 merge·삭제/이름 변경·한글/특수 경로·이진 파일·submodule, 파일/전체 바이트·파일 수 제한, 저우선순위 포함, 명시적 묶기와 CLI 실행을 확인한다. 캐시는 출력/관측 시각 변경 시 재사용, 정책·Git 설정·경로·clone 변경 시 분리, 손상 캐시 복구, 위조 메타데이터 거부와 캐시 이후 blob 누락 시 재사용 거부를 검사한다.
+
 ## 8. DB와 migration
 
 `.env`의 `DATABASE_URL`을 설정하고, 로컬 Docker를 사용할 경우 다음 순서로 실행한다.
@@ -229,9 +249,9 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 ## 9. 현재 구현 범위
 
-완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보 선별 통합 테스트.
+완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 수동 커밋 묶기·제한된 근거 추출·추출 캐시, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보·근거 통합 테스트.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·증분 캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 모든 작성자의 커밋 메타데이터와 변경 파일을 수집하고 `prepare`는 이메일 기록으로 분석 대상을 선별한다. patch·실제 기여 범위 확정·업무 완료 판단은 수행하지 않는다.
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·LLM 분석 캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거를 제공한다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 수행하지 않는다.
 
 ## 10. 관련 문서
 

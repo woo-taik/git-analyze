@@ -1,10 +1,8 @@
-import { execFile } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { promisify } from 'node:util';
 import type { CommitRecord } from '@git-analyze/core';
+import { git } from './command.js';
 
-const execute = promisify(execFile);
 const MAX_COMMITS = 1_000;
 
 export interface LocalCommit extends Omit<CommitRecord, 'ownerId' | 'repositoryId'> {
@@ -26,24 +24,7 @@ export interface LocalHistory {
   readonly commits: readonly LocalCommit[];
 }
 
-async function git(cwd: string, args: readonly string[]): Promise<string> {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-  try {
-    const result = await execute('git', [
-      '--no-pager', '--no-replace-objects', '--no-optional-locks',
-      '-c', 'protocol.allow=never', '-c', 'core.fsmonitor=false', ...args,
-    ], {
-      cwd,
-      env: { ...env, GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1' },
-      encoding: 'utf8', timeout: 30_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
-    });
-    return result.stdout;
-  } catch {
-    throw new Error(`Git ${args[0]} failed. Check the local repository, ref, Git installation, or reduce the period.`);
-  }
-}
-
-function parseCommits(output: string, observedAt: string): Omit<LocalCommit, 'files'>[] {
+export function parseCommits(output: string, observedAt: string): Omit<LocalCommit, 'files'>[] {
   if (!output) return [];
   const fields = output.split('\0');
   if (fields.pop() !== '' || fields.length % 9 !== 0) throw new Error('Invalid Git commit output');
@@ -64,7 +45,7 @@ function parseCommits(output: string, observedAt: string): Omit<LocalCommit, 'fi
   return commits;
 }
 
-function normalizePathFilter(value: string | undefined): string | null {
+export function normalizePathFilter(value: string | undefined): string | null {
   if (value === undefined) return null;
   const path = value.replaceAll('\\', '/');
   const parts = path.split('/').filter((part) => part !== '' && part !== '.');

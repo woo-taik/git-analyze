@@ -31,7 +31,7 @@ function oid(value: unknown): string {
   return result;
 }
 
-function parseHistory(value: unknown): LocalHistory {
+export function parseHistory(value: unknown): LocalHistory {
   const source = object(value);
   if (source.schemaVersion !== 1 || source.timezone !== 'Asia/Seoul'
     || source.dateBasis !== 'committer' || source.fileComparison !== 'first-parent'

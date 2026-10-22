@@ -51,10 +51,10 @@ export async function writeHistoryReports(history: LocalHistory, outputDirectory
 export { text as escapeMarkdownText };
 
 export async function writeReportPair(
-  stem: 'history' | 'candidates', data: unknown, markdown: string, outputDirectory?: string,
+  stem: 'history' | 'candidates' | 'evidence', data: unknown, markdown: string, outputDirectory?: string,
 ) {
   const directory = resolve(outputDirectory ?? join(
-    '.data', stem === 'history' ? 'collections' : 'candidates', `${Date.now()}-${randomUUID().slice(0, 8)}`,
+    '.data', stem === 'history' ? 'collections' : stem, `${Date.now()}-${randomUUID().slice(0, 8)}`,
   ));
   await mkdir(dirname(directory), { recursive: true });
   try {

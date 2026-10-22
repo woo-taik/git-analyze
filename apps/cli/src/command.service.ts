@@ -6,6 +6,7 @@ import { Injectable } from '@nestjs/common';
 import { parseCollectOptions } from './collect-options.js';
 import { writeHistoryReports } from './history-report.js';
 import { executePrepare } from './prepare.js';
+import { executeEvidence } from './evidence.js';
 
 const run = promisify(execFile);
 
@@ -13,7 +14,7 @@ const run = promisify(execFile);
 export class CommandService {
   async run() {
     const [command = 'help', ...extra] = process.argv.slice(2);
-    if (!['collect', 'prepare'].includes(command) && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
+    if (!['collect', 'prepare', 'evidence'].includes(command) && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
 
     switch (command) {
       case 'help':
@@ -24,6 +25,8 @@ export class CommandService {
           '  pnpm cli providers  Show provider integration status',
           '  pnpm cli collect --repo <local-path> [--period 1w|1m|3m|6m] [--ref HEAD] [--path <repo-relative-path>] [--output <new-directory>]',
           '  pnpm cli prepare --input <history.json> --author <email> [--alias <email>] [--include <full-oid>] [--exclude <full-oid>] [--output <new-directory>]',
+          '  pnpm cli evidence --input <candidates.json> (--group <id> | --commit <full-oid>...) [--title <text>] [--repo <local-path>] [--output <new-directory>]',
+          '    [--max-file-bytes 16384] [--max-total-bytes 65536] [--max-files 20] [--include-low-priority] [--cache-dir <path>] [--no-cache]',
           '', 'Local committed history only. Remote collection and LLM analysis are not implemented.',
         ].join('\n'));
         return;
@@ -36,6 +39,9 @@ export class CommandService {
       }
       case 'prepare':
         console.log(JSON.stringify(await executePrepare(extra), null, 2));
+        return;
+      case 'evidence':
+        console.log(JSON.stringify(await executeEvidence(extra), null, 2));
         return;
       case 'providers':
         console.log(JSON.stringify({ providers: PROVIDER_CATALOG }, null, 2));

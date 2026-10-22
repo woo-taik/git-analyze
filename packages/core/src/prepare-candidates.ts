@@ -53,7 +53,7 @@ const LOCKFILES = new Set([
 ]);
 const GENERATED_DIRECTORIES = new Set(['node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt']);
 
-function lowPriority(path: string): boolean {
+export function isLowPriorityPath(path: string): boolean {
   const parts = path.replaceAll('\\', '/').toLowerCase().split('/');
   const name = parts.at(-1) ?? '';
   return LOCKFILES.has(name) || parts.some((part) => GENERATED_DIRECTORIES.has(part))
@@ -116,7 +116,7 @@ export function prepareCandidates(input: {
   for (const commit of unique.values()) {
     const contribution = contributionOf(commit, emails);
     const issueRefs = references(commit.message);
-    const lowPriorityFiles = commit.files.filter((file) => lowPriority(file.path)).map((file) => file.path);
+    const lowPriorityFiles = commit.files.filter((file) => isLowPriorityPath(file.path)).map((file) => file.path);
     const reasons: CandidateReason[] = [];
     let decision: CandidateDecision = contribution === 'author' ? 'candidate' : 'review';
     if (contribution === 'author') reasons.push('author_matched');
