@@ -1,6 +1,6 @@
 # 프로젝트 구조와 개발 방법
 
-기준일: 2026-10-21, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
+기준일: 2026-10-22, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
 
 ## 1. 구조의 목적
 
@@ -22,9 +22,11 @@ apps/
   cli/src/
     index.ts                     Nest standalone 진입점과 종료
     cli.module.ts
-    command.service.ts           help·doctor·providers·collect 명령
+    command.service.ts           help·doctor·providers·collect·prepare 명령
     collect-options.ts           수집 옵션·경로 필터·KST 기간 계산
-    history-report.ts            JSON·Markdown 출력과 새 폴더 생성
+    history-report.ts            수집 Markdown·공용 JSON/Markdown 새 폴더 출력
+    prepare.ts                   저장된 이력 입력 검증·후보 선별 조립
+    candidate-report.ts          후보·검토·제외 Markdown과 원본 출처
   worker/src/
     index.ts                     Nest standalone 진입점
     worker.module.ts
@@ -37,6 +39,7 @@ packages/
     evidence.ts                  근거·주장 상태·작업·분석·성과 문장
     llm.ts                       분석·문장 생성 계약과 토큰 사용량
     jobs.ts                      작업 이름과 payload
+    prepare-candidates.ts        이메일·검토 사유·참조 묶기·수동 선별 규칙
     index.ts                     공개 export
   config/src/index.ts            환경 설정 검증과 기본값
   providers/src/
@@ -50,6 +53,7 @@ packages/
     drizzle.config.ts            migration 생성·적용 설정
 tests/scaffold.test.ts           API 경계·설정 비밀 값·워커 시작 검증
 tests/collect.test.ts            실제 Git fixture·기간·출력·CLI 통합 검증
+tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI 통합 검증
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -85,8 +89,11 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `doctor`: Node·Git 실행 여부와 DB 설정 유무. DB 접속 검사는 수행하지 않는다.
 - `providers`: 공급자 카탈로그. 실제 연결 성공을 의미하지 않는다.
 - `collect`: 로컬 레포와 기간을 검증하고 이력을 수집해 JSON·Markdown 파일을 생성한다. DB와 LLM을 사용하지 않는다.
+- `prepare`: 저장한 `history.json`과 작성자 이메일/별칭으로 후보·검토·제외를 선별하고 JSON·Markdown을 생성한다. Git·DB·LLM에 연결하지 않는다.
 
 호출 흐름은 `CommandService → parseCollectOptions → collectLocalHistory → writeHistoryReports`다. `--repo`는 필수이며 `--period`는 `1w`·`1m`·`3m`·`6m`, `--ref`는 기본 `HEAD`다. `--path`는 Git 저장소 루트 기준 상대 경로를 지정하고, `--output`은 새 출력 폴더를 지정한다.
+
+후보 선별 흐름은 `CommandService → executePrepare → prepareCandidates → writeCandidateReports → writeReportPair`다. `prepare.ts`가 JSON schema·날짜 범위·OID·파일 상태·입력 상한을 검사하고, core가 외부 연결 없이 규칙을 적용한다. `--input`, `--author`는 필수이며 `--alias`와 `--author`를 반복해 명시적으로 동일인 이메일을 선택한다. `--include`/`--exclude`는 전체 OID로 재선별한다. 출력마다 새 폴더를 만들어 원본과 기존 결과를 보존한다.
 
 ### 워커
 
@@ -107,6 +114,9 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `WorkItem`, `WorkItemAnalysis`, `ResumeBullet`: 문제 해결 건·분석·성과 문장.
 - `LlmProvider`, `LlmUsage`: 분석·생성 계약과 토큰 사용량.
 - `JobPayload`: 작업의 소유자·저장소·대상·입력 버전.
+- `prepareCandidates`: 순수 함수로 이메일 정규화·동일 OID 중복 제거·기여 기록 구분·검토 사유·명시적 참조 묶기·수동 선별을 계산한다. 입력·원본·선별 사유를 보존하며 `candidates-v1` 규칙 버전을 출력한다.
+
+작성자 일치는 후보, 공동 작성 trailer와 커미터만 일치는 검토, 미일치는 제외다. 병합·생성 경로만 변경·여러 참조 등은 검토에 남기며 자동으로 성과를 확정하지 않는다. 단일 명시적 이슈 참조가 같은 경우에만 같은 상태 안에서 묶는다. 참조가 없으면 커밋별 후보로 유지한다. 수동 포함도 기여 구분을 덮어쓰지 않는다. 후보 묶음은 영속 `WorkItem`·승인 기록·내용 hash 캐시가 아니다.
 
 인터페이스와 타입 선언은 실제 수집기나 LLM 연결이 구현됐다는 뜻이 아니다.
 
@@ -142,7 +152,7 @@ Drizzle schema와 지연 연결 pool factory를 제공한다. import만으로 �
 
 ```text
 API    → config, providers → core
-CLI    → config, providers → core
+CLI    → config, core, providers → core
 Worker → config, core, pg-boss
 Database → core, Drizzle, pg
 
@@ -169,6 +179,7 @@ pnpm cli doctor
 pnpm cli providers
 pnpm cli collect --repo "C:\dev\git-analyze" --period 1w
 pnpm cli collect --repo "C:\dev\law" --period 1w --path frontend
+pnpm cli prepare --input ".data\my-history\history.json" --author "me@example.com" --alias "work@example.com"
 pnpm worker:check
 pnpm dev:api
 ```
@@ -200,6 +211,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 
 경로 필터 테스트는 혼합 커밋에서 대상 파일만 남기기, 다른 폴더 전용 커밋 제외, 유사한 폴더명 제외, 경로 밖으로 이동한 파일의 삭제 기록, merge 포함, 특수문자 경로의 리터럴 처리, 경로 정규화·이탈 거부와 실제 CLI 전달을 확인한다.
 
+후보 선별 테스트는 작성자/커미터/공동 작성 구분, 명시적 별칭만 매핑, 병합·낮은 우선순위·빈 변경 검토, 참조별 묶기와 중복 그룹 방지, 수동 재선별·원본 보존, 중복 관측과 내용 충돌, 잘못된 입력 거부를 확인한다. 실제 레포가 없는 경로를 담은 fixture로 빌드된 Nest CLI를 실행해 오프라인 동작, Markdown escape, 원본 바이트 보존과 출력 덮어쓰기 방지를 검증한다.
+
 ## 8. DB와 migration
 
 `.env`의 `DATABASE_URL`을 설정하고, 로컬 Docker를 사용할 경우 다음 순서로 실행한다.
@@ -216,9 +229,9 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 ## 9. 현재 구현 범위
 
-완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git 통합 테스트.
+완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보 선별 통합 테스트.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·증분 캐시·이력서 생성·인증과 소유권 검사·검토 UI. 로컬 CLI는 모든 작성자의 커밋 메타데이터와 변경 파일만 수집하며, patch·개인 기여 판단·업무 완료 판단은 수행하지 않는다.
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·증분 캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 모든 작성자의 커밋 메타데이터와 변경 파일을 수집하고 `prepare`는 이메일 기록으로 분석 대상을 선별한다. patch·실제 기여 범위 확정·업무 완료 판단은 수행하지 않는다.
 
 ## 10. 관련 문서
 

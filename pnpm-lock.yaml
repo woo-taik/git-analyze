@@ -59,6 +59,9 @@ importers:
       '@git-analyze/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@git-analyze/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@git-analyze/providers':
         specifier: workspace:*
         version: link:../../packages/providers

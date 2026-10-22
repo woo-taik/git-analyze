@@ -45,8 +45,16 @@ export function renderHistoryMarkdown(history: LocalHistory): string {
 }
 
 export async function writeHistoryReports(history: LocalHistory, outputDirectory?: string) {
+  return writeReportPair('history', history, renderHistoryMarkdown(history), outputDirectory);
+}
+
+export { text as escapeMarkdownText };
+
+export async function writeReportPair(
+  stem: 'history' | 'candidates', data: unknown, markdown: string, outputDirectory?: string,
+) {
   const directory = resolve(outputDirectory ?? join(
-    '.data', 'collections', `${Date.now()}-${randomUUID().slice(0, 8)}`,
+    '.data', stem === 'history' ? 'collections' : 'candidates', `${Date.now()}-${randomUUID().slice(0, 8)}`,
   ));
   await mkdir(dirname(directory), { recursive: true });
   try {
@@ -54,9 +62,9 @@ export async function writeHistoryReports(history: LocalHistory, outputDirectory
   } catch {
     throw new Error('Output directory already exists or cannot be created. Choose a new --output directory.');
   }
-  const jsonPath = join(directory, 'history.json');
-  const markdownPath = join(directory, 'history.md');
-  await writeFile(jsonPath, `${JSON.stringify(history, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-  await writeFile(markdownPath, renderHistoryMarkdown(history), { encoding: 'utf8', flag: 'wx' });
+  const jsonPath = join(directory, `${stem}.json`);
+  const markdownPath = join(directory, `${stem}.md`);
+  await writeFile(jsonPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  await writeFile(markdownPath, markdown, { encoding: 'utf8', flag: 'wx' });
   return { jsonPath, markdownPath };
 }

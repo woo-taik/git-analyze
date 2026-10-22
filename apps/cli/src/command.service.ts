@@ -5,6 +5,7 @@ import { collectLocalHistory, PROVIDER_CATALOG } from '@git-analyze/providers';
 import { Injectable } from '@nestjs/common';
 import { parseCollectOptions } from './collect-options.js';
 import { writeHistoryReports } from './history-report.js';
+import { executePrepare } from './prepare.js';
 
 const run = promisify(execFile);
 
@@ -12,7 +13,7 @@ const run = promisify(execFile);
 export class CommandService {
   async run() {
     const [command = 'help', ...extra] = process.argv.slice(2);
-    if (command !== 'collect' && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
+    if (!['collect', 'prepare'].includes(command) && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
 
     switch (command) {
       case 'help':
@@ -22,6 +23,7 @@ export class CommandService {
           '  pnpm cli doctor     Check local prerequisites',
           '  pnpm cli providers  Show provider integration status',
           '  pnpm cli collect --repo <local-path> [--period 1w|1m|3m|6m] [--ref HEAD] [--path <repo-relative-path>] [--output <new-directory>]',
+          '  pnpm cli prepare --input <history.json> --author <email> [--alias <email>] [--include <full-oid>] [--exclude <full-oid>] [--output <new-directory>]',
           '', 'Local committed history only. Remote collection and LLM analysis are not implemented.',
         ].join('\n'));
         return;
@@ -32,6 +34,9 @@ export class CommandService {
         console.log(JSON.stringify({ count: history.commits.length, ...files }, null, 2));
         return;
       }
+      case 'prepare':
+        console.log(JSON.stringify(await executePrepare(extra), null, 2));
+        return;
       case 'providers':
         console.log(JSON.stringify({ providers: PROVIDER_CATALOG }, null, 2));
         return;

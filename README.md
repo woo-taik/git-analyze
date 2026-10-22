@@ -25,7 +25,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집은 CLI에서 실행할 수 있다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI, 실제 LLM 어댑터는 후속 구현이다.
+로컬 Git 이력 수집과 작성자별 분석 후보 선별은 CLI에서 실행할 수 있다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI, 실제 LLM 어댑터는 후속 구현이다.
 
 ## 시작
 
@@ -58,7 +58,26 @@ pnpm cli collect --repo "C:\dev\law" --period 1w --path frontend
 
 `--repo "C:\dev\law\frontend"`를 입력해도 저장소 루트는 `C:\dev\law`다. 따라서 frontend만 원하면 `--path frontend`를 함께 지정한다. 경로는 글자 그대로 처리하며 절대 경로와 `..`은 허용하지 않는다. 삭제된 파일·폴더도 과거 이력에서 찾을 수 있다. 혼합 커밋의 메시지는 원문을 유지하고 파일 목록만 제한한다.
 
-DB·LLM 키 없이 실행한다. checkout·fetch·원격 접속·patch 수집·작성자 필터는 수행하지 않는다. 빈 저장소나 존재하지 않는 ref, shallow 이력, 경로 필터 전 기간 내 검사 대상 1,000건 초과는 오류로 알린다. 수집 결과는 이력서 성과 분석 전의 원본 기록이다.
+DB·LLM 키 없이 실행한다. `collect`는 checkout·fetch·원격 접속·patch 수집·작성자 필터를 수행하지 않는다. 빈 저장소나 존재하지 않는 ref, shallow 이력, 경로 필터 전 기간 내 검사 대상 1,000건 초과는 오류로 알린다. 수집 결과는 이력서 성과 분석 전의 원본 기록이다.
+
+## 본인 이력에서 분석 후보 선별
+
+```powershell
+pnpm cli prepare --input ".data\my-history\history.json" --author "me@example.com"
+pnpm cli prepare --input ".data\my-history\history.json" --author "me@example.com" --alias "work@example.com" --output ".data\my-candidates"
+```
+
+먼저 `collect --output ".data\my-history"`로 저장한 파일을 입력한다. `prepare`는 저장된 JSON만 읽으므로 원본 레포·Git·DB·LLM 연결 없이 반복 실행할 수 있다. `--author`와 `--alias`는 여러 번 지정할 수 있다. 이메일은 대소문자와 앞뒤 공백만 정규화하며 이름·유사 이메일로 동일인을 추정하지 않는다.
+
+- 작성자 일치는 분석 후보, 커미터만 일치하거나 공동 작성 trailer가 있으면 검토 필요로 분류한다.
+- 병합·lockfile/생성 경로만 변경·변경 파일 없음·여러 이슈 참조는 검토에 남긴다. 변경 크기나 파일명만으로 영구 제외하지 않는다.
+- 명시적 `APP-123`, `fixes #123`, `refs #123` 등 단일 참조가 같을 때만 같은 상태 안에서 묶는다. 제목·시간·경로 유사도와 단독 `#123`은 묶기 기준이 아니다. 참조 존재·같은 문제 여부는 아직 검증하지 않는다.
+- 일치하지 않는 작성자는 제외 상태로 기록하며 원본 커밋·파일·선별 사유를 JSON에 보존한다.
+- `--include <전체 OID>` 또는 `--exclude <전체 OID>`를 반복 지정해 다시 선별할 수 있다. 수동 포함은 본인 기여·업무 완료를 확인했다는 뜻이 아니다. 같은 OID의 상충 지시나 입력에 없는 OID는 거부한다.
+
+출력은 `.data/candidates/<실행별 ID>/candidates.json`과 `candidates.md`다. `--output`은 새 폴더만 허용한다. JSON에는 원본 경로·ref·기준 OID·기간·선택 이메일·규칙 버전·모든 원본 커밋과 선별 결과를, Markdown에는 후보·검토·제외 목록을 남긴다. 같은 OID의 반복 관측은 중복 제거하되 내용 충돌은 오류로 알린다.
+
+입력은 수집기 schema v1, 최대 1,000개 커밋·32 MiB의 JSON이다. 원본 파일을 수정하지 않는다. 후보는 향후 patch·근거 검토를 위한 입력이며 이력서 성과 문장이 아니다. 현재 선별 단계의 LLM 호출은 0회이며, 분석 캐시와 토큰 예산 적용은 후속 작업이다. 전체 보존용 JSON을 그대로 LLM에 전달하는 구조는 구현하지 않았다.
 
 - `GET /health`: 프로세스 생존 확인.
 - `GET /ready`: 업무 파이프라인 미구현 상태이므로 현재 503을 반환.
@@ -73,7 +92,7 @@ pnpm start:api
 
 DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db:migrate`를 실행한다. 생성 SQL은 `packages/database/migrations`에 있다.
 
-현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 초기 DB schema/migration, 기본·Git 통합 테스트.
+현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 초기 DB schema/migration, 기본·Git·후보 선별 통합 테스트.
 미구현: 원격 동기화·LLM 분석·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
-작성 기준일: 2026-10-21, Asia/Seoul.
+작성 기준일: 2026-10-22, Asia/Seoul.
