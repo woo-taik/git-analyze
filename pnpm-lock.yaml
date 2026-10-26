@@ -104,7 +104,11 @@ importers:
 
   packages/config: {}
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
 
   packages/database:
     dependencies:

@@ -121,4 +121,6 @@ DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db
 
 분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. 아직 CLI·DB·LLM에는 연결하지 않았다. 사용 계약은 [프로젝트 구조](docs/project-structure.md)의 core 설명을 따른다.
 
+분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 모델 응답은 검증 전 `unknown`으로 취급한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 실제 LLM 호출·확인 기록 저장·CLI 조립은 후속이다.
+
 작성 기준일: 2026-10-26, Asia/Seoul.

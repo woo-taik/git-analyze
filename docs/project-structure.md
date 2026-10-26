@@ -43,6 +43,8 @@ packages/
     prepare-candidates.ts        이메일·검토 사유·참조 묶기·수동 선별 규칙
     evidence-extraction.ts       로컬 근거 계약·발췌 우선순위·바이트 예산
     analysis-evidence.ts         분석 입력 변환·원본 매핑 검사·내용/입력 버전
+    analysis-schema.ts           공급자 독립 분석 출력 JSON Schema·버전
+    analysis-validation.ts       분석 출력 파싱·주장/출처/사용자 확인 검사
     canonical-json.ts            추출·분석에 공통인 정규화 JSON 직렬화
     index.ts                     공개 export
   config/src/index.ts            환경 설정 검증과 기본값
@@ -62,6 +64,7 @@ tests/collect.test.ts            실제 Git fixture·기간·출력·CLI 통합 
 tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI 통합 검증
 tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통합 검증
 tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌 참조 검증
+tests/analysis-validation.test.ts 분석 출력 형식·출처·확인 기록·응답 크기 검사
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -130,6 +133,7 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `prepareCandidates`: 순수 함수로 이메일 정규화·동일 OID 중복 제거·기여 기록 구분·검토 사유·명시적 참조 묶기·수동 선별을 계산한다. 입력·원본·선별 사유를 보존하며 `candidates-v1` 규칙 버전을 출력한다.
 - `LocalEvidencePacket`, `buildLocalEvidence`: 커밋 메시지·파일 근거 ID·첫 부모 patch 위치·생략 사유·완전성을 기록한다. 읽기 콜백을 주입받고 파일/전체 바이트·파일 수 예산을 적용한다. Node 파일 시스템·해시·Git 실행에 직접 의존하지 않는다.
 - `toEvidencePacket`: 타입이 검증된 로컬 추출 패킷을 분석 입력으로 변환한다. Web Crypto SHA-256으로 내용 버전을 대조하며 외부 연결·파일 I/O·DB 조회를 수행하지 않는다.
+- `WORK_ITEM_ANALYSIS_SCHEMA`, `validateWorkItemAnalysis`, `parseWorkItemAnalysis`: 분석 출력 형식과 실제 입력 근거·사용자 확인 연결을 검사한다. 스키마 검증에 Ajv를 사용하며 네트워크·DB에 연결하지 않는다.
 
 작성자 일치는 후보, 공동 작성 trailer와 커미터만 일치는 검토, 미일치는 제외다. 병합·생성 경로만 변경·여러 참조 등은 검토에 남기며 자동으로 성과를 확정하지 않는다. 단일 명시적 이슈 참조가 같은 경우에만 같은 상태 안에서 묶는다. 참조가 없으면 커밋별 후보로 유지한다. 수동 포함도 기여 구분을 덮어쓰지 않는다. 후보 묶음은 영속 `WorkItem`·승인 기록·내용 hash 캐시가 아니다.
 
@@ -155,6 +159,16 @@ const input = await toEvidencePacket({
 발췌의 `id`, 텍스트, locator, 커밋/부모 OID, 경로와 `complete`를 보존하고 `reference`에 원본 레코드 ID·버전을 연결한다. `provenance.local`에는 추출 정책·명시적 묶기·선별/기여 정보·파일 manifest·blob OID·생략 사유·요약을 보존한다. 실행 시각·로컬 절대 경로·캐시 hit 등 보고서 실행 메타데이터는 포함하지 않는다. 입력 객체는 복사하므로 변환 중·후 원본의 변경이 반환값을 수정하지 않는다.
 
 현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 저장된 임의 JSON의 전체 런타임 스키마 검증기는 아니므로 입력 파싱·크기 제한은 추후 `analyze` CLI의 I/O 경계에서 처리해야 한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. 이 함수는 아직 CLI·DB·LLM 실행 흐름에 연결하지 않았다.
+
+분석 출력의 스키마 버전은 `ANALYSIS_SCHEMA_VERSION`(`work-item-analysis-v1`)이다. `WORK_ITEM_ANALYSIS_SCHEMA`는 기존 `WorkItemAnalysis`의 camelCase 필드를 따르는 draft-07 JSON Schema다. 각 문제·제약·대안·결정·구현·결과·검증·기여 배열은 `{ id, text, status, evidence }` 주장으로 구성하며 `user_confirmed`에만 `confirmationId`가 필요하다. 최상위와 내부 객체의 알 수 없는 필드, 빈 문자열·공백뿐인 문구, 잘못된 상태·타입을 거부한다. 섹션당 최대 32개 주장, 주장당 최대 20개 인용, 최대 20개 질문, 식별자 최대 512자와 문구·locator 최대 4,096자를 적용한다. 이 제한은 토큰 예산과 별도다. Ajv 설정은 형 변환·필드 삭제·기본값 삽입을 허용하지 않는다. 스키마 버전과 TypeScript 검증 연동은 [Ajv 공식 문서](https://ajv.js.org/guide/typescript.html)를 참고한다.
+
+`LlmProvider.analyze`의 원시 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 네트워크 응답의 중단·공급자 거부·종료 사유 검사는 실제 어댑터에서 추가해야 한다. 검증기는 응답 전체가 도착했다고 가정하며, 전송 상태를 알 수 없다.
+
+런타임 검증은 `workItemId`와 `inputVersion`의 일치, 전체 섹션에서 주장 ID의 유일성, 모든 인용의 원본 ID·버전·locator가 실제 입력 발췌와 정확하게 일치하는지를 확인한다. 빈 발췌는 인용할 수 없으며 `source_supported`는 적어도 하나의 인용이 필요하다. `inferred`·`missing`은 근거 없이 남길 수 있다. 추출 패킷이 불완전해도 제한된 분석은 허용하며 원본의 `complete` 값을 변경하지 않는다. 인용의 존재가 해당 주장의 의미적 타당성, 테스트 실행 성공, 수치·선택 이유·개인 기여를 증명하지는 않는다. 이러한 판단과 최종 문장 출력 정책은 후속 검토 단계에서 다룬다.
+
+`ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. 확인 ID는 불변 기록을 식별해야 하며 실제 사용자 행동·권한·DB 존재 검사는 호출 계층의 책임이다. 확인 기록의 수집·영속화와 캐시 무효화는 아직 구현하지 않았다.
+
+실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. 분석 출력 검증도 아직 실제 LLM·저장·CLI 실행에는 연결하지 않았다.
 
 ### config
 
@@ -257,6 +271,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 근거 테스트는 실제 Git fixture에서 root·첫 부모 merge·삭제/이름 변경·한글/특수 경로·이진 파일·submodule, 파일/전체 바이트·파일 수 제한, 저우선순위 포함, 명시적 묶기와 CLI 실행을 확인한다. 캐시는 출력/관측 시각 변경 시 재사용, 정책·Git 설정·경로·clone 변경 시 분리, 손상 캐시 복구, 위조 메타데이터 거부와 캐시 이후 blob 누락 시 재사용 거부를 검사한다.
 
 분석 입력 테스트는 발췌·기여·생략 정보 보존, 원본 매핑과 소유자·저장소 범위, 내용 hash와 분석 입력 버전, 끊어진 참조 거부, 입력 복사, 불완전한 근거 보존을 확인한다. 실제 `evidence` 보고서의 복수 커밋을 변환한 뒤 원래 추출 패킷으로 복원하는 연결 테스트도 포함한다.
+
+분석 출력 테스트는 실제 추출→분석 입력 변환 결과를 사용한다. 출력 스키마, 원본/입력 버전과 locator, 주장 중복, 없는/철회된/다른 범위의 사용자 확인, 정확한 확인 문구, 잘린 JSON·거부 객체·바이트 상한, 원본 내용 비노출과 입력 객체 보존을 확인한다.
 
 ## 8. DB와 migration
 

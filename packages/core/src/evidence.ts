@@ -23,6 +23,17 @@ export type Claim = ClaimBase & (
   | { readonly status: 'inferred' | 'missing'; readonly evidence: readonly EvidenceReference[] }
 );
 
+// Trusted application input, never accepted from the model's analysis JSON.
+// IDs identify immutable confirmation records; revocation must remain observable.
+export interface ClaimConfirmation extends RepositoryScope {
+  readonly id: string;
+  readonly workItemId: string;
+  readonly inputVersion: string;
+  readonly claimId: string;
+  readonly text: string;
+  readonly status: 'confirmed' | 'revoked';
+}
+
 export interface WorkItem extends RepositoryScope {
   readonly id: string;
   readonly title: string;

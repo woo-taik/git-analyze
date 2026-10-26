@@ -1,6 +1,6 @@
 # LLM 비용 및 토큰 설계
 
-수정일: 2026-10-22. 후보 선별·바이트 제한 근거 추출·추출 캐시는 로컬 CLI에 구현했다. 아래 모델 토큰 예산·분석 결과 캐시·평가 계획은 제안이며 실제 LLM 측정 결과가 아니다.
+수정일: 2026-10-26. 후보 선별·바이트 제한 근거 추출·추출 캐시는 로컬 CLI에 구현했다. core에는 분석 입력 변환과 출력 스키마·런타임 검증을 구현했다. 아래 모델 토큰 예산·분석 결과 캐시·평가 계획은 제안이며 실제 LLM 측정 결과가 아니다.
 
 ## 1. 가장 중요한 절약 방식
 
@@ -37,14 +37,17 @@
 
 ### A. 작업별 분석
 
-변경되었으며 선별을 통과한 건에만 호출한다. 결과는 JSON Schema 기반으로 다음 필드를 갖는다.
+변경되었으며 선별을 통과한 건에만 호출한다. 현재 `WORK_ITEM_ANALYSIS_SCHEMA`와 런타임 검증기가 정의하는 결과 필드는 다음과 같다. 실제 공급자 호출은 아직 연결하지 않았다.
 
 - `problem`, `constraints`, `alternatives`, `decision`, `implementation`.
 - `results`, `verification`, `contribution`.
-- `claims`: 주장 텍스트, `evidence_ids`, 사실 상태, 검증 한계.
-- `missing_questions`, `completeness`.
+- 각 섹션의 주장: `id`, `text`, `status`, `evidence`. 인용은 입력 발췌의 `sourceRecordId`, `sourceVersion`, `locator`를 정확하게 참조한다.
+- `user_confirmed` 주장은 추가로 `confirmationId`를 가지며 모델 응답 밖의 확인 기록과 연결한다.
+- `workItemId`, `inputVersion`, `missingQuestions`.
 
-없는 대안·수치·결과는 null 또는 빈 배열로 표현한다. 동일 응답에서 질문도 생성해 별도 질문 생성 호출을 줄인다.
+없는 대안·수치·결과는 빈 배열 또는 `missing` 주장으로 표현한다. 배열을 null로 대체하지 않는다. 근거 완전성은 신뢰된 입력 패킷의 `complete`와 provenance에서 보존하며 모델이 출력하지 않는다. 동일 응답에서 질문도 생성해 별도 질문 생성 호출을 줄인다.
+
+`parseWorkItemAnalysis`는 UTF-8 기준 1 MiB 상한으로 JSON을 파싱하고 스키마·작업/입력 버전·주장 ID·인용 연결·사용자 확인을 검증한다. 디코딩된 JSON에는 `validateWorkItemAnalysis`를 사용한다. 출력 형식과 출처 연결의 일치 여부를 검사하며 주장의 의미적 타당성이나 수치의 정확성을 자동 보증하지 않는다. 사용자 확인 기록·권한은 호출 계층에서 검증해 제공해야 한다. 공급자의 응답 종료·거부·타임아웃과 요청 토큰 예산은 실제 어댑터에서 후속 구현한다.
 
 ### B. 기간별 문장 생성
 

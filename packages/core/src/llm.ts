@@ -23,7 +23,8 @@ export interface LlmRequestOptions {
 
 // An integration contract only: no SDK, credentials or network side effects.
 export interface LlmProvider {
-  analyze(packet: EvidencePacket, options: LlmRequestOptions): Promise<LlmResult<WorkItemAnalysis>>;
+  // Model output remains untrusted until validateWorkItemAnalysis succeeds.
+  analyze(packet: EvidencePacket, options: LlmRequestOptions): Promise<LlmResult<unknown>>;
   generate(input: {
     readonly analyses: readonly WorkItemAnalysis[];
     readonly language: string;
