@@ -1,4 +1,5 @@
 import type { RepositoryScope } from './repositories.js';
+import type { LocalEvidencePacket } from './evidence-extraction.js';
 
 export const SOURCE_KINDS = [
   'commit', 'pull_request', 'issue', 'review', 'check', 'user_note',
@@ -32,12 +33,34 @@ export interface WorkItem extends RepositoryScope {
 
 export interface EvidencePacket extends RepositoryScope {
   readonly workItemId: string;
+  // Hash of the entire mapped input, including source bindings and mapping policy.
   readonly version: string;
   readonly complete: boolean;
+  readonly provenance: {
+    readonly kind: 'local_git';
+    readonly mappingVersion: string;
+    readonly contentVersion: string;
+    // Extraction policy, grouping, contribution, omissions and blob identities.
+    readonly local: Omit<LocalEvidencePacket, 'excerpts' | 'complete'>;
+    readonly sources: readonly EvidenceSourceBinding[];
+  };
   readonly excerpts: readonly {
+    readonly id: string;
     readonly reference: EvidenceReference;
     readonly text: string;
+    readonly complete: boolean;
+    readonly commitOid: string;
+    readonly parentOid: string | null;
+    readonly path: string | null;
   }[];
+}
+
+// Supplied by the caller that associates a local commit with a source snapshot.
+// The converter never invents persistent IDs or grants access to these scopes.
+export interface EvidenceSourceBinding extends RepositoryScope {
+  readonly commitOid: string;
+  readonly sourceRecordId: string;
+  readonly sourceVersion: string;
 }
 
 export interface WorkItemAnalysis {

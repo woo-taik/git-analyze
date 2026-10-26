@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { executePrepare } from '../apps/cli/src/prepare.js';
 import { executeEvidence } from '../apps/cli/src/evidence.js';
 import { linePrefix, utf8Bytes } from '../packages/core/src/evidence-extraction.js';
+import { toEvidencePacket, type LocalEvidencePacket } from '../packages/core/src/index.js';
 import { collectLocalHistory, type LocalHistory } from '../packages/providers/src/git/local-history.js';
 import { readGit } from '../packages/providers/src/git/command.js';
 
@@ -131,6 +132,31 @@ describe('bounded local evidence', () => {
     expect(combined.packet.selection.commitOids).toEqual([oid('root'), oid('feature')].sort());
     expect(combined.packet.commits).toHaveLength(2);
     expect(combined.packet.excerpts.filter((excerpt: { path: string }) => excerpt.path === 'frontend/src/app.ts')).toHaveLength(2);
+  });
+
+  it('maps a real CLI report to scoped analysis input without losing extraction provenance', async () => {
+    const result = await executeEvidence(options(['--commit', oid('feature'), '--no-cache']));
+    const report = JSON.parse(await readFile(result.jsonPath, 'utf8')) as {
+      packet: LocalEvidencePacket; contentVersion: string;
+    };
+    const sources = report.packet.commits.map((commit) => ({ ownerId: 'fixture-owner', repositoryId: 'fixture-repo',
+      commitOid: commit.oid, sourceRecordId: `fixture-record:${commit.oid}`, sourceVersion: commit.oid }));
+    const mapped = await toEvidencePacket({ ownerId: 'fixture-owner', repositoryId: 'fixture-repo',
+      workItemId: 'fixture-work', packet: report.packet, contentVersion: report.contentVersion, sources });
+    const again = await toEvidencePacket({ ownerId: 'fixture-owner', repositoryId: 'fixture-repo',
+      workItemId: 'fixture-work', packet: report.packet, contentVersion: report.contentVersion, sources: [...sources].reverse() });
+    expect(mapped).toEqual(again);
+    expect(mapped.provenance.local.commits).toHaveLength(2);
+    expect(mapped.complete).toBe(false);
+    expect(mapped.provenance.local.commits.flatMap((commit) => commit.files).map((file) => file.reason))
+      .toContain('binary');
+    const reconstructed = { ...mapped.provenance.local, complete: mapped.complete,
+      excerpts: mapped.excerpts.map((excerpt) => ({ id: excerpt.id, commitOid: excerpt.commitOid,
+        parentOid: excerpt.parentOid, path: excerpt.path, locator: excerpt.reference.locator,
+        text: excerpt.text, complete: excerpt.complete })) };
+    expect(reconstructed).toEqual(report.packet);
+    expect(mapped.excerpts.every((excerpt) => excerpt.reference.sourceRecordId === `fixture-record:${excerpt.commitOid}`)).toBe(true);
+    expect(mapped).not.toHaveProperty('source.repositoryPath');
   });
 
   it('distinguishes binary omissions and preserves deletion/rename-as-delete-add patches', async () => {

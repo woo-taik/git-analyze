@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
-  buildLocalEvidence, CANDIDATE_RULE_VERSION, EXTRACTION_VERSION, prepareCandidates,
+  buildLocalEvidence, canonicalJson as canonical, CANDIDATE_RULE_VERSION, EXTRACTION_VERSION, prepareCandidates,
   type EvidenceLimits, type LocalEvidencePacket,
 } from '@git-analyze/core';
 import { inspectLocalEvidence, readLocalPatch } from '@git-analyze/providers';
@@ -30,15 +30,6 @@ function limit(value: string | undefined, fallback: number, maximum: number): nu
   return Number(value);
 }
 
-// Canonical serialization is independent of property insertion order, clock time and output location.
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
 const hash = (value: unknown) => createHash('sha256').update(canonical(value)).digest('hex');
 
 async function loadCandidates(inputFile: string) {

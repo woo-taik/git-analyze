@@ -1,6 +1,6 @@
 # 프로젝트 구조와 개발 방법
 
-기준일: 2026-10-22, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
+기준일: 2026-10-26, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
 
 ## 1. 구조의 목적
 
@@ -42,6 +42,8 @@ packages/
     jobs.ts                      작업 이름과 payload
     prepare-candidates.ts        이메일·검토 사유·참조 묶기·수동 선별 규칙
     evidence-extraction.ts       로컬 근거 계약·발췌 우선순위·바이트 예산
+    analysis-evidence.ts         분석 입력 변환·원본 매핑 검사·내용/입력 버전
+    canonical-json.ts            추출·분석에 공통인 정규화 JSON 직렬화
     index.ts                     공개 export
   config/src/index.ts            환경 설정 검증과 기본값
   providers/src/
@@ -59,6 +61,7 @@ tests/scaffold.test.ts           API 경계·설정 비밀 값·워커 시작 �
 tests/collect.test.ts            실제 Git fixture·기간·출력·CLI 통합 검증
 tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI 통합 검증
 tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통합 검증
+tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌 참조 검증
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -126,12 +129,32 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `JobPayload`: 작업의 소유자·저장소·대상·입력 버전.
 - `prepareCandidates`: 순수 함수로 이메일 정규화·동일 OID 중복 제거·기여 기록 구분·검토 사유·명시적 참조 묶기·수동 선별을 계산한다. 입력·원본·선별 사유를 보존하며 `candidates-v1` 규칙 버전을 출력한다.
 - `LocalEvidencePacket`, `buildLocalEvidence`: 커밋 메시지·파일 근거 ID·첫 부모 patch 위치·생략 사유·완전성을 기록한다. 읽기 콜백을 주입받고 파일/전체 바이트·파일 수 예산을 적용한다. Node 파일 시스템·해시·Git 실행에 직접 의존하지 않는다.
+- `toEvidencePacket`: 타입이 검증된 로컬 추출 패킷을 분석 입력으로 변환한다. Web Crypto SHA-256으로 내용 버전을 대조하며 외부 연결·파일 I/O·DB 조회를 수행하지 않는다.
 
 작성자 일치는 후보, 공동 작성 trailer와 커미터만 일치는 검토, 미일치는 제외다. 병합·생성 경로만 변경·여러 참조 등은 검토에 남기며 자동으로 성과를 확정하지 않는다. 단일 명시적 이슈 참조가 같은 경우에만 같은 상태 안에서 묶는다. 참조가 없으면 커밋별 후보로 유지한다. 수동 포함도 기여 구분을 덮어쓰지 않는다. 후보 묶음은 영속 `WorkItem`·승인 기록·내용 hash 캐시가 아니다.
 
 인터페이스와 타입 선언은 실제 수집기나 LLM 연결이 구현됐다는 뜻이 아니다.
 
-`LocalEvidencePacket`은 로컬 CLI의 추출 형식이다. 기존 `EvidencePacket`의 다중 사용자 소유자·저장소·업무 ID가 부여된 분석 입력으로 아직 변환하지 않는다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않는다.
+`LocalEvidencePacket`은 로컬 CLI의 추출 형식이다. `toEvidencePacket`은 호출자가 전달한 `ownerId`, `repositoryId`, `workItemId`와 커밋별 `EvidenceSourceBinding`으로 `EvidencePacket`을 만든다. 원본 매핑에는 `commitOid`, `sourceRecordId`, `sourceVersion`, 소유자·저장소 범위가 필요하다. 선택 커밋마다 원본 레코드를 하나씩 명시해야 하며 누락·중복·다른 범위는 거부한다. DB 레코드를 자동 생성하거나 로컬 Git 디렉터리 hash를 영속 저장소 ID로 취급하지 않는다. 범위 일치 검사는 인증·인가나 DB 레코드 존재 확인을 대신하지 않는다.
+
+```ts
+import { toEvidencePacket } from '@git-analyze/core';
+
+// report는 I/O 경계에서 파싱·검증한 evidence 보고서,
+// sourceBindings는 호출 계층에서 확인한 커밋별 원본 스냅샷 연결이다.
+const input = await toEvidencePacket({
+  ownerId, repositoryId, workItemId,
+  packet: report.packet,
+  contentVersion: report.contentVersion,
+  sources: sourceBindings,
+});
+```
+
+`provenance.contentVersion`은 기존 추출 패킷의 정규화 SHA-256이며 변환 전에 재계산해 비교한다. `version`은 소유자·저장소·작업 ID, 원본 매핑, 변환 규칙 버전과 보존된 근거 전체를 포함한 분석 입력 SHA-256이다. 같은 추출 내용이라도 원본 버전·작업·범위가 바뀌면 분석 입력 버전이 바뀐다. 원본 매핑 배열은 커밋 순서로 정규화하므로 전달 순서만 바뀌어도 결과가 달라지지 않는다. 모델·프롬프트·사용자 확인 버전 등을 포함한 분석 결과 캐시 키는 후속 구현이다.
+
+발췌의 `id`, 텍스트, locator, 커밋/부모 OID, 경로와 `complete`를 보존하고 `reference`에 원본 레코드 ID·버전을 연결한다. `provenance.local`에는 추출 정책·명시적 묶기·선별/기여 정보·파일 manifest·blob OID·생략 사유·요약을 보존한다. 실행 시각·로컬 절대 경로·캐시 hit 등 보고서 실행 메타데이터는 포함하지 않는다. 입력 객체는 복사하므로 변환 중·후 원본의 변경이 반환값을 수정하지 않는다.
+
+현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 저장된 임의 JSON의 전체 런타임 스키마 검증기는 아니므로 입력 파싱·크기 제한은 추후 `analyze` CLI의 I/O 경계에서 처리해야 한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. 이 함수는 아직 CLI·DB·LLM 실행 흐름에 연결하지 않았다.
 
 ### config
 
@@ -233,6 +256,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 
 근거 테스트는 실제 Git fixture에서 root·첫 부모 merge·삭제/이름 변경·한글/특수 경로·이진 파일·submodule, 파일/전체 바이트·파일 수 제한, 저우선순위 포함, 명시적 묶기와 CLI 실행을 확인한다. 캐시는 출력/관측 시각 변경 시 재사용, 정책·Git 설정·경로·clone 변경 시 분리, 손상 캐시 복구, 위조 메타데이터 거부와 캐시 이후 blob 누락 시 재사용 거부를 검사한다.
 
+분석 입력 테스트는 발췌·기여·생략 정보 보존, 원본 매핑과 소유자·저장소 범위, 내용 hash와 분석 입력 버전, 끊어진 참조 거부, 입력 복사, 불완전한 근거 보존을 확인한다. 실제 `evidence` 보고서의 복수 커밋을 변환한 뒤 원래 추출 패킷으로 복원하는 연결 테스트도 포함한다.
+
 ## 8. DB와 migration
 
 `.env`의 `DATABASE_URL`을 설정하고, 로컬 Docker를 사용할 경우 다음 순서로 실행한다.
@@ -249,7 +274,7 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 ## 9. 현재 구현 범위
 
-완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 수동 커밋 묶기·제한된 근거 추출·추출 캐시, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보·근거 통합 테스트.
+완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 수동 커밋 묶기·제한된 근거 추출·추출 캐시, 분석 입력 변환·출처 연결·내용/입력 버전 검사, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보·근거·분석 입력 테스트.
 
 미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·LLM 분석 캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거를 제공한다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 수행하지 않는다.
 

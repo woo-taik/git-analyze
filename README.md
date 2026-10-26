@@ -116,7 +116,9 @@ pnpm start:api
 
 DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db:migrate`를 실행한다. 생성 SQL은 `packages/database/migrations`에 있다.
 
-현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 초기 DB schema/migration, 기본·Git·후보·근거 통합 테스트.
+현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 분석 입력 변환·원본 매핑·내용/입력 버전 검사, 초기 DB schema/migration, 기본·Git·후보·근거·분석 입력 테스트.
 미구현: 원격 동기화·LLM 분석·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
-작성 기준일: 2026-10-22, Asia/Seoul.
+분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. 아직 CLI·DB·LLM에는 연결하지 않았다. 사용 계약은 [프로젝트 구조](docs/project-structure.md)의 core 설명을 따른다.
+
+작성 기준일: 2026-10-26, Asia/Seoul.
