@@ -63,7 +63,7 @@ async function loadCandidates(inputFile: string) {
 interface EvidenceReport {
   readonly schemaVersion: 1;
   readonly createdAt: string;
-  readonly source: { readonly inputFile: string; readonly repositoryPath: string; readonly tipOid: string; readonly startAt: string; readonly endAt: string };
+  readonly source: { readonly inputFile: string; readonly repositoryPath: string; readonly ref: string; readonly tipOid: string; readonly startAt: string; readonly endAt: string };
   readonly cache: { readonly hit: boolean; readonly key: string; readonly stored: boolean };
   readonly contentVersion: string;
   readonly packet: LocalEvidencePacket;
@@ -182,7 +182,7 @@ export async function executeEvidence(args: readonly string[]) {
   }
   const report: EvidenceReport = {
     schemaVersion: 1, createdAt: new Date().toISOString(),
-    source: { inputFile, repositoryPath: inspected.repositoryPath, tipOid: history.tipOid, startAt: history.startAt, endAt: history.endAt },
+    source: { inputFile, repositoryPath: inspected.repositoryPath, ref: history.ref, tipOid: history.tipOid, startAt: history.startAt, endAt: history.endAt },
     cache: { hit, key, stored }, contentVersion: hash(packet), packet,
   };
   const files = await writeReportPair('evidence', report, renderEvidenceMarkdown(report), values.output);

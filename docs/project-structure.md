@@ -1,6 +1,6 @@
 # 프로젝트 구조와 개발 방법
 
-기준일: 2026-10-26, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
+기준일: 2026-10-28, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
 
 ## 1. 구조의 목적
 
@@ -22,12 +22,16 @@ apps/
   cli/src/
     index.ts                     Nest standalone 진입점과 종료
     cli.module.ts
-    command.service.ts           help·doctor·providers·collect·prepare·evidence 명령
+    command.service.ts           help·doctor·providers·collect·prepare·evidence·analyze 명령
     collect-options.ts           수집 옵션·경로 필터·KST 기간 계산
     history-report.ts            수집 Markdown·공용 JSON/Markdown 새 폴더 출력
     prepare.ts                   저장된 이력 입력 검증·후보 선별 조립
     candidate-report.ts          후보·검토·제외 Markdown과 원본 출처
     evidence.ts                  후보 입력·수동 묶기·근거 추출 조립·캐시·보고서
+    analyze.ts                   전송 선택·미리보기·분석·캐시·실패 조립
+    analysis-input.ts            크기 제한 UTF-8 JSON·원본 연결 파일 입력
+    analysis-cache.ts            분석 키·저장 결과 재검증·원자적 캐시 파일 저장
+    analysis-report.ts           새 출력 폴더·분석/실패/미리보기 보고서
   worker/src/
     index.ts                     Nest standalone 진입점
     worker.module.ts
@@ -42,6 +46,7 @@ packages/
     jobs.ts                      작업 이름과 payload
     prepare-candidates.ts        이메일·검토 사유·참조 묶기·수동 선별 규칙
     evidence-extraction.ts       로컬 근거 계약·발췌 우선순위·바이트 예산
+    local-evidence-validation.ts 로컬 추출 패킷 런타임 구조·집계·위치 검사
     analysis-evidence.ts         분석 입력 변환·원본 매핑 검사·내용/입력 버전
     analysis-schema.ts           공급자 독립 분석 출력 JSON Schema·버전
     analysis-validation.ts       분석 출력 파싱·주장/출처/사용자 확인 검사
@@ -69,6 +74,7 @@ tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통�
 tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌 참조 검증
 tests/analysis-validation.test.ts 분석 출력 형식·출처·확인 기록·응답 크기 검사
 tests/openai-analysis.test.ts    SDK 모형 fetch·전송 경계·예산·상태·사용량 검사
+tests/analyze.test.ts            CLI 입력·미리보기·저장·캐시·실패·동시 호출 검사
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -106,6 +112,7 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `collect`: 로컬 레포와 기간을 검증하고 이력을 수집해 JSON·Markdown 파일을 생성한다. DB와 LLM을 사용하지 않는다.
 - `prepare`: 저장한 `history.json`과 작성자 이메일/별칭으로 후보·검토·제외를 선별하고 JSON·Markdown을 생성한다. Git·DB·LLM에 연결하지 않는다.
 - `evidence`: 저장한 후보에서 그룹 하나 또는 명시한 커밋들을 선택하고, 로컬 객체 검증 후 크기를 제한한 patch 근거와 추출 캐시를 생성한다. DB·LLM을 사용하지 않는다.
+- `analyze`: 저장한 근거와 명시적 원본 연결·발췌 선택을 검증하고 OpenAI 분석 초안을 JSON·Markdown으로 저장한다. `--dry-run`은 키 없이 오프라인 미리보기를 생성하며 동일 요청은 외부 호출 없이 로컬 캐시를 재사용한다.
 
 호출 흐름은 `CommandService → parseCollectOptions → collectLocalHistory → writeHistoryReports`다. `--repo`는 필수이며 `--period`는 `1w`·`1m`·`3m`·`6m`, `--ref`는 기본 `HEAD`다. `--path`는 Git 저장소 루트 기준 상대 경로를 지정하고, `--output`은 새 출력 폴더를 지정한다.
 
@@ -114,6 +121,8 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 근거 추출 흐름은 `CommandService → executeEvidence → inspectLocalEvidence → 캐시 조회 또는 buildLocalEvidence/readLocalPatch → writeReportPair`다. 후보의 원본을 기존 history parser로 검증하고, 저장된 명시적 override로 규칙을 다시 계산한다. `--group`과 반복 `--commit`은 상호 배타적이며 최대 20커밋을 선택한다. runtime 입력 검증과 파일 I/O는 CLI, 선택·예산 정책은 core, Git 객체·patch 읽기는 providers가 담당한다.
 
 캐시 재사용 전에도 원본 메타데이터·ref 기준 도달 가능성·파일 목록·blob 존재를 확인한다. 추출 키와 패킷 내용 hash는 별도다. 실행/관측 시각·출력 경로·기간은 패킷 내용에 넣지 않고 보고서의 출처 정보로 둔다. 서로 다른 clone은 별도 범위이며 로컬 범위 식별은 HTTP 인증·인가를 대신하지 않는다.
+
+분석 흐름은 `executeAnalyze → loadAnalysisInput/validateLocalEvidencePacket → toEvidencePacket → prepareOpenAiAnalysisRequest → 미리보기 또는 검증된 분석 캐시/어댑터 → 보고서`다. 소유자·저장소·작업과 원본 ID·버전을 `--bindings` 파일로 명시한다. 발췌는 반복 `--excerpt`로 선택하고 마스킹은 JSON 파일로 입력한다. 실제 분석 전 출력 폴더를 확보하고, 캐시 miss의 동시 중복 호출은 키별 lock으로 차단한다. 실패를 성공 캐시에 저장하지 않으며 손상 캐시는 자동 재호출하지 않는다. 자세한 명령·입력·실패/캐시 계약은 [분석 CLI 사용법](analysis-cli.md)을 따른다.
 
 ### 워커
 
@@ -158,11 +167,11 @@ const input = await toEvidencePacket({
 });
 ```
 
-`provenance.contentVersion`은 기존 추출 패킷의 정규화 SHA-256이며 변환 전에 재계산해 비교한다. `version`은 소유자·저장소·작업 ID, 원본 매핑, 변환 규칙 버전과 보존된 근거 전체를 포함한 분석 입력 SHA-256이다. 같은 추출 내용이라도 원본 버전·작업·범위가 바뀌면 분석 입력 버전이 바뀐다. 원본 매핑 배열은 커밋 순서로 정규화하므로 전달 순서만 바뀌어도 결과가 달라지지 않는다. 모델·프롬프트·사용자 확인 버전 등을 포함한 분석 결과 캐시 키는 후속 구현이다.
+`provenance.contentVersion`은 기존 추출 패킷의 정규화 SHA-256이며 변환 전에 재계산해 비교한다. `version`은 소유자·저장소·작업 ID, 원본 매핑, 변환 규칙 버전과 보존된 근거 전체를 포함한 분석 입력 SHA-256이다. 같은 추출 내용이라도 원본 버전·작업·범위가 바뀌면 분석 입력 버전이 바뀐다. 원본 매핑 배열은 커밋 순서로 정규화하므로 전달 순서만 바뀌어도 결과가 달라지지 않는다. CLI 분석 캐시 키에는 전송 입력·모델/epoch·프롬프트·스키마·설정과 현재 확인 상태 버전(`none-v1`)을 포함한다.
 
 발췌의 `id`, 텍스트, locator, 커밋/부모 OID, 경로와 `complete`를 보존하고 `reference`에 원본 레코드 ID·버전을 연결한다. `provenance.local`에는 추출 정책·명시적 묶기·선별/기여 정보·파일 manifest·blob OID·생략 사유·요약을 보존한다. 실행 시각·로컬 절대 경로·캐시 hit 등 보고서 실행 메타데이터는 포함하지 않는다. 입력 객체는 복사하므로 변환 중·후 원본의 변경이 반환값을 수정하지 않는다.
 
-현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 저장된 임의 JSON의 전체 런타임 스키마 검증기는 아니므로 입력 파싱·크기 제한은 추후 `analyze` CLI의 I/O 경계에서 처리해야 한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. 호출자는 변환 결과를 OpenAI 분석 어댑터에 전달할 수 있으며 CLI·DB 조립은 후속이다.
+현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 변환기 자체는 전체 JSON 파서가 아니며 `analyze`의 크기 제한 UTF-8 JSON 입력과 core의 `validateLocalEvidencePacket`을 먼저 적용한다. 구조 검사는 타입·열거값·상한·시간·경로·발췌 ID/locator·바이트/파일 집계를 확인한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. CLI는 변환 결과를 OpenAI 어댑터에 연결하며 DB 조립은 후속이다.
 
 분석 출력의 스키마 버전은 `ANALYSIS_SCHEMA_VERSION`(`work-item-analysis-v1`)이다. `WORK_ITEM_ANALYSIS_SCHEMA`는 기존 `WorkItemAnalysis`의 camelCase 필드를 따르는 draft-07 JSON Schema다. 각 문제·제약·대안·결정·구현·결과·검증·기여 배열은 `{ id, text, status, evidence }` 주장으로 구성하며 `user_confirmed`에만 `confirmationId`가 필요하다. 최상위와 내부 객체의 알 수 없는 필드, 빈 문자열·공백뿐인 문구, 잘못된 상태·타입을 거부한다. 섹션당 최대 32개 주장, 주장당 최대 20개 인용, 최대 20개 질문, 식별자 최대 512자와 문구·locator 최대 4,096자를 적용한다. 이 제한은 토큰 예산과 별도다. Ajv 설정은 형 변환·필드 삭제·기본값 삽입을 허용하지 않는다. 스키마 버전과 TypeScript 검증 연동은 [Ajv 공식 문서](https://ajv.js.org/guide/typescript.html)를 참고한다.
 
@@ -172,7 +181,7 @@ const input = await toEvidencePacket({
 
 `ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. 확인 ID는 불변 기록을 식별해야 하며 실제 사용자 행동·권한·DB 존재 검사는 호출 계층의 책임이다. 확인 기록의 수집·영속화와 캐시 무효화는 아직 구현하지 않았다.
 
-실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. OpenAI 어댑터는 분석 출력 검증을 호출하며 저장·CLI 조립은 후속이다.
+실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. OpenAI 어댑터와 CLI 캐시 hit 모두 분석 출력 검증을 호출한다.
 
 ### config
 
@@ -194,7 +203,7 @@ GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그와 로
 
 현재는 전체 `RepositoryReader` 어댑터가 아닌 로컬 기간 수집·patch 추출 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
 
-`OpenAiAnalysisProvider`는 별도의 `LlmAnalysisProvider` 구현이다. OpenAI SDK는 providers 안에만 둔다. 키·모델·context window는 호출 시 설정하며 import와 생성자만으로 요청하지 않는다. 명시적 발췌 선택·민감 경로 제외·마스킹 후 지시문·스키마를 포함한 입력 토큰을 공급자 API로 계산하고 예산 내 분석 1회와 검증을 연결한다. 미완료·실패·거부·네트워크 오류를 성공 처리하지 않고 사용량을 기록한다. 실제 외부 API 호출을 수행하는 기능이므로 전송 정책과 [호출 계약](llm-analysis.md)을 따른다. CLI·DB·분석 결과 캐시는 아직 연결하지 않았다.
+`OpenAiAnalysisProvider`는 별도의 `LlmAnalysisProvider` 구현이다. OpenAI SDK는 providers 안에만 둔다. 키·모델·context window는 호출 시 설정하며 import와 생성자만으로 요청하지 않는다. 명시적 발췌 선택·민감 경로 제외·마스킹 후 지시문·스키마를 포함한 입력 토큰을 공급자 API로 계산하고 예산 내 분석 1회와 검증을 연결한다. 미완료·실패·거부·네트워크 오류를 성공 처리하지 않고 사용량을 기록한다. 실제 외부 API 호출을 수행하는 기능이므로 전송 정책과 [호출 계약](llm-analysis.md)을 따른다. `prepareOpenAiAnalysisRequest`를 CLI 미리보기와 실제 요청에서 공유한다. CLI·로컬 분석 결과 캐시를 연결했으며 DB 연결은 후속이다.
 
 ### database
 
@@ -280,6 +289,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 
 분석 출력 테스트는 실제 추출→분석 입력 변환 결과를 사용한다. 출력 스키마, 원본/입력 버전과 locator, 주장 중복, 없는/철회된/다른 범위의 사용자 확인, 정확한 확인 문구, 잘린 JSON·거부 객체·바이트 상한, 원본 내용 비노출과 입력 객체 보존을 확인한다.
 
+분석 CLI 테스트는 실제 추출 보고서 연결, 불량 UTF-8·JSON·근거/매핑 거부, 키 없는 전송 미리보기, 모형 SDK 분석 저장, 동일 요청의 외부 호출 0회, 모델/epoch·범위·설정별 분리, 기간만 바뀐 입력 재사용, 손상 캐시·동시 miss 차단, 마스킹·기존 출력 보존·실패 사용량 저장과 빌드된 Nest CLI를 확인한다.
+
 ## 8. DB와 migration
 
 `.env`의 `DATABASE_URL`을 설정하고, 로컬 Docker를 사용할 경우 다음 순서로 실행한다.
@@ -298,7 +309,9 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 수동 커밋 묶기·제한된 근거 추출·추출 캐시, 분석 입력 변환·출처 연결·내용/입력 버전 검사, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보·근거·분석 입력 테스트.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 분석 CLI·저장·캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거를 제공한다. OpenAI 분석은 패키지 API로 제공하며 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 사용자 검토가 필요하다.
+추가 완료: 분석 근거 런타임 검증·명시적 원본 연결, 분석 CLI·오프라인 전송 미리보기·분석/실패 JSON/Markdown 저장·분석 결과 캐시와 동시 miss 차단.
+
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·DB 분석 저장·사용자 보충/확인·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거, `analyze`는 분석 초안을 제공한다. 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 사용자 검토가 필요하다.
 
 ## 10. 관련 문서
 

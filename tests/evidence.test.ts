@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { executePrepare } from '../apps/cli/src/prepare.js';
 import { executeEvidence } from '../apps/cli/src/evidence.js';
+import { executeAnalyze } from '../apps/cli/src/analyze.js';
 import { linePrefix, utf8Bytes } from '../packages/core/src/evidence-extraction.js';
 import { toEvidencePacket, type LocalEvidencePacket } from '../packages/core/src/index.js';
 import { collectLocalHistory, type LocalHistory } from '../packages/providers/src/git/local-history.js';
@@ -99,6 +100,23 @@ afterAll(async () => {
 });
 
 describe('bounded local evidence', () => {
+  it('passes a real extracted Git report through the offline analysis CLI input boundary', async () => {
+    const evidence = await executeEvidence(options([], oid('feature')));
+    const saved = await packet(evidence);
+    const bindings = join(root, `bindings-${sequence++}.json`);
+    await writeFile(bindings, JSON.stringify({ schemaVersion: 1, ownerId: 'fixture-owner', repositoryId: 'fixture-repo', workItemId: 'fixture-work',
+      sources: saved.packet.commits.map((commit: { oid: string }) => ({ ownerId: 'fixture-owner', repositoryId: 'fixture-repo',
+        commitOid: commit.oid, sourceRecordId: `commit:${commit.oid}`, sourceVersion: commit.oid })) }));
+    const result = await executeAnalyze(['--input', evidence.jsonPath, '--bindings', bindings,
+      ...saved.packet.excerpts.flatMap((excerpt: { id: string }) => ['--excerpt', excerpt.id]),
+      '--model', 'fixture-model', '--model-epoch', 'fixture-v1', '--context-window', '16000', '--dry-run',
+      '--output', join(root, `preview-${sequence++}`)], { env: {} });
+    expect(result).toMatchObject({ status: 'preview', externalRequests: 0 });
+    const preview = JSON.parse(await readFile(result.jsonPath, 'utf8'));
+    expect(preview.source).toMatchObject({ repositoryPath: history.repositoryPath, ref: history.ref, commitCount: 1, pathFilter: 'frontend' });
+    expect(preview.transmission.sourceInputVersion).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('clips at complete UTF-8 lines and never counts characters as bytes', () => {
     const text = '한글\nsecond\n';
     expect(utf8Bytes('한글')).toBe(6);

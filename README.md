@@ -17,6 +17,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 - [기술 스택 및 아키텍처](docs/architecture.md): 권장 구성, 대안 비교, 수집·저장·작업 처리 설계.
 - [LLM 비용 및 토큰 설계](docs/llm-efficiency.md): 재사용, 입력 예산, 캐시, 품질 평가와 비용 측정.
 - [LLM 분석 어댑터](docs/llm-analysis.md): OpenAI 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
+- [분석 CLI 사용법](docs/analysis-cli.md): 원본 연결 파일, 전송 미리보기, 분석 저장과 호출 없는 캐시 재사용.
 - [구현 순서](docs/implementation-plan.md): 단계별 산출물과 완료 조건.
 - [다중 저장소 공급자 지원](docs/repository-providers.md): 공통 Git 수집, GitHub·SourceCommit 연결, 추적 가능 범위와 한계.
 - [프로젝트 구조와 개발 방법](docs/project-structure.md): 전체 디렉터리, 앱·패키지 책임, 의존성 방향, 기능 추가 규칙, 실행·검증·DB 관리와 구현 범위.
@@ -26,7 +27,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출은 CLI에서 실행할 수 있다. OpenAI 작업 분석 어댑터는 패키지 API로 제공하며 CLI 조립·분석 저장·재사용은 후속이다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI도 아직 없다.
+로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 OpenAI 구조화 분석을 CLI에서 실행할 수 있다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·확인·성과 문장, 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI는 후속이다.
 
 ## 시작
 
@@ -78,7 +79,7 @@ pnpm cli prepare --input ".data\my-history\history.json" --author "me@example.co
 
 출력은 `.data/candidates/<실행별 ID>/candidates.json`과 `candidates.md`다. `--output`은 새 폴더만 허용한다. JSON에는 원본 경로·ref·기준 OID·기간·선택 이메일·규칙 버전·모든 원본 커밋과 선별 결과를, Markdown에는 후보·검토·제외 목록을 남긴다. 같은 OID의 반복 관측은 중복 제거하되 내용 충돌은 오류로 알린다.
 
-입력은 수집기 schema v1, 최대 1,000개 커밋·32 MiB의 JSON이다. 원본 파일을 수정하지 않는다. 후보는 향후 patch·근거 검토를 위한 입력이며 이력서 성과 문장이 아니다. 현재 선별 단계의 LLM 호출은 0회이며, 분석 캐시와 토큰 예산 적용은 후속 작업이다. 전체 보존용 JSON을 그대로 LLM에 전달하는 구조는 구현하지 않았다.
+입력은 수집기 schema v1, 최대 1,000개 커밋·32 MiB의 JSON이다. 원본 파일을 수정하지 않는다. 후보는 patch·근거 검토를 위한 입력이며 이력서 성과 문장이 아니다. 선별 단계의 LLM 호출은 0회다. 분석 단계는 별도 토큰 예산과 캐시를 적용하며 전체 보존용 JSON을 그대로 LLM에 전달하지 않는다.
 
 ## 선택한 후보의 코드 변경 근거 추출
 
@@ -102,7 +103,17 @@ pnpm cli evidence --input ".data\my-candidates\candidates.json" --commit <첫 OI
 
 추출 캐시는 `.cache/evidence`에 저장한다. `--cache-dir`로 위치를 지정하거나 `--no-cache`로 읽기·쓰기를 끌 수 있다. 캐시 hit에도 실제 커밋·파일 목록·blob 존재를 검사하며 patch 재추출을 생략한다. 객체가 없거나 조회에 실패한 결과는 캐시하지 않는다. 한도 때문에 일부만 담은 패킷은 불완전 표시와 함께 재사용할 수 있다.
 
-캐시 키는 로컬 Git 공통 디렉터리의 식별 hash, Git 버전, 설정·유효 속성 hash, 선택 커밋·기여 분류·경로 범위·추출 규칙·한도·수동 묶기 정보를 포함한다. 출력 위치·실행 시각·관측 시각·기간만 바뀌어도 같은 입력이면 재사용한다. clone이 달라지면 별도 범위로, 같은 공통 Git 디렉터리를 쓰는 worktree는 같은 범위로 취급한다. Git 설정 원문은 캐시에 저장하지 않는다. 정규화한 패킷의 SHA-256을 `contentVersion`으로 반환한다. LLM 분석 결과 캐시는 아직 없다.
+캐시 키는 로컬 Git 공통 디렉터리의 식별 hash, Git 버전, 설정·유효 속성 hash, 선택 커밋·기여 분류·경로 범위·추출 규칙·한도·수동 묶기 정보를 포함한다. 출력 위치·실행 시각·관측 시각·기간만 바뀌어도 같은 입력이면 재사용한다. clone이 달라지면 별도 범위로, 같은 공통 Git 디렉터리를 쓰는 worktree는 같은 범위로 취급한다. Git 설정 원문은 캐시에 저장하지 않는다. 정규화한 패킷의 SHA-256을 `contentVersion`으로 반환한다. 분석 결과는 별도의 `.cache/analysis`를 사용한다.
+
+## 선택한 근거 분석
+
+`evidence.json`과 커밋별 원본 ID·버전을 연결한 `bindings.json`을 준비하고, `evidence.md`에서 검토한 발췌 ID를 선택한다.
+
+```powershell
+pnpm cli analyze --input ".data\law-evidence\evidence.json" --bindings ".data\law-bindings.json" --excerpt "<검토한 발췌 ID>" --model "<모델 또는 리비전>" --model-epoch "2026-10-28-v1" --context-window <모델 context 토큰 수> --dry-run --output ".data\law-preview"
+```
+
+`--dry-run`은 키·외부 호출 없이 전송 미리보기를 저장한다. 실제 분석은 `OPENAI_API_KEY`를 설정하고 `--dry-run`을 제거해 새 출력 폴더로 실행한다. 토큰 계산도 외부 전송이다. 동일 요청은 키 없이도 외부 호출 0회로 재사용한다. 입력 형식·마스킹·예산·실패·캐시 계약은 [분석 CLI 사용법](docs/analysis-cli.md)을 따른다.
 
 - `GET /health`: 프로세스 생존 확인.
 - `GET /ready`: 업무 파이프라인 미구현 상태이므로 현재 503을 반환.
@@ -118,12 +129,13 @@ pnpm start:api
 DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db:migrate`를 실행한다. 생성 SQL은 `packages/database/migrations`에 있다.
 
 현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 분석 입력 변환·원본 매핑·내용/입력 버전 검사, 초기 DB schema/migration, 기본·Git·후보·근거·분석 입력 테스트.
-미구현: 원격 동기화·LLM 분석 CLI/저장/재사용·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
+추가 완료: 근거 파일 런타임 검증·명시적 원본 매핑, 분석 CLI·오프라인 전송 미리보기·분석/실패 저장·사용량 기록·분석 캐시와 동시 miss 차단.
+미구현: 원격 동기화·DB 분석 저장·사용자 보충/확인·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
-분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. 아직 CLI·DB·LLM에는 연결하지 않았다. 사용 계약은 [프로젝트 구조](docs/project-structure.md)의 core 설명을 따른다.
+분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. CLI는 파일 검증 후 이 변환을 분석 어댑터에 연결한다. DB 원본 등록은 후속이다.
 
-분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 확인 기록 저장·CLI 조립은 후속이다.
+분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 확인 기록 저장은 후속이다.
 
 `OpenAiAnalysisProvider`는 명시한 키·모델·context window로 선택된 발췌를 분석한다. 민감 경로 제외·문자열 마스킹 후 지시문·출력 스키마까지 포함한 전체 입력을 계산하고, 예산 내에서 분석 1회와 출력 검증을 수행한다. 계산 요청도 외부 전송이므로 검토한 발췌 ID를 명시해야 한다. SDK 모형 테스트를 통과했으며 실제 모델 접속·품질·청구는 아직 검증하지 않았다. [호출 계약과 제한](docs/llm-analysis.md)을 따른다.
 
-작성 기준일: 2026-10-26, Asia/Seoul.
+작성 기준일: 2026-10-28, Asia/Seoul.

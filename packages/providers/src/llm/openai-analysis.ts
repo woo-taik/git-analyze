@@ -59,6 +59,17 @@ function readUsage(response: Record<string, unknown>): LlmUsage | null {
     requestId: typeof response._request_id === 'string' ? response._request_id : null };
 }
 
+/** Pure, offline preparation shared by the CLI preview and the actual requests. */
+export function prepareOpenAiAnalysisRequest(packet: EvidencePacket, model: string,
+  transmission: LlmAnalysisRequestOptions['transmission']) {
+  if (typeof model !== 'string' || !model.trim()) throw new OpenAiAnalysisError('invalid_options', 'count');
+  const prepared = prepareAnalysisTransmission(structuredClone(packet), structuredClone(transmission));
+  return { ...prepared, body: { model, instructions: ANALYSIS_INSTRUCTIONS,
+    input: [{ role: 'user' as const, content: prepared.input }],
+    text: { format: { type: 'json_schema' as const, name: 'work_item_analysis', strict: true,
+      schema: structuredClone(OPENAI_ANALYSIS_SCHEMA) } }, truncation: 'disabled' as const } };
+}
+
 /** One preflight count and at most one generation. Construction/imports never send a request. */
 export class OpenAiAnalysisProvider implements LlmAnalysisProvider {
   private readonly client: OpenAI;
@@ -84,11 +95,8 @@ export class OpenAiAnalysisProvider implements LlmAnalysisProvider {
     if (!integer(maxInputTokens) || maxInputTokens < 1 || !integer(maxOutputTokens) || maxOutputTokens < 1
       || maxOutputTokens > this.contextWindowTokens) throw new OpenAiAnalysisError('invalid_options', 'count');
     // Snapshot before the first await; neither policy nor evidence may change after counting.
-    const prepared = prepareAnalysisTransmission(structuredClone(packet), structuredClone(options.transmission));
-    const body = { model: this.model, instructions: ANALYSIS_INSTRUCTIONS,
-      input: [{ role: 'user' as const, content: prepared.input }],
-      text: { format: { type: 'json_schema' as const, name: 'work_item_analysis', strict: true,
-        schema: structuredClone(OPENAI_ANALYSIS_SCHEMA) } }, truncation: 'disabled' as const };
+    const prepared = prepareOpenAiAnalysisRequest(packet, this.model, options.transmission);
+    const { body } = prepared;
     const signal = callerSignal ? AbortSignal.any([callerSignal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs);
     const checkAbort = (stage: 'count' | 'analysis') => {
       if (signal.aborted) throw new OpenAiAnalysisError(callerSignal?.aborted ? 'aborted' : 'timeout', stage);

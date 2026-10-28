@@ -8,3 +8,4 @@ export * from './analysis-evidence.js';
 export * from './canonical-json.js';
 export * from './analysis-schema.js';
 export * from './analysis-validation.js';
+export * from './local-evidence-validation.js';
