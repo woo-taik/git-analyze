@@ -1,0 +1,14 @@
+---
+description: Git 이력 분석 대상을 law 저장소로 고정한다
+alwaysApply: true
+---
+
+# Git 이력 분석 대상
+
+- 사용자가 다른 저장소를 명시적으로 지정하기 전까지 Git 이력 분석 대상은 `C:\dev\law`로 고정한다.
+- `C:\dev\git-analyze`는 분석 도구의 개발 디렉터리다. 현재 작업 디렉터리를 분석 대상으로 대신 사용하지 않는다.
+- 수집·근거 추출 전에 `git -C C:\dev\law rev-parse --show-toplevel`로 대상을 확인한다.
+- CLI 수집 시 `--repo C:\dev\law`를 명시한다. 대상을 찾지 못하면 다른 저장소로 대체하지 않는다.
+- 기간을 별도로 지정하지 않으면 Asia/Seoul 기준 최근 1주일을 사용한다.
+- 출력에는 실제 저장소 경로·ref·절대 기간·수집 건수·분석 범위를 표시한다.
+- `git-analyze` 저장소를 대상으로 생성한 기존 `.data/week-analysis` 결과를 `law` 분석으로 제시하지 않는다.

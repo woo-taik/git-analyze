@@ -53,6 +53,9 @@ packages/
     git/local-history.ts         로컬 커밋·변경 파일 수집
     git/command.ts               shell 없는 Git 실행·출력 크기/시간 제한
     git/local-evidence.ts        객체 검증·첫 부모 raw diff·제한된 patch 읽기
+    llm/openai-analysis.ts       OpenAI 토큰 계산·분석·상태/사용량·검증 연결
+    llm/openai-schema.ts         생성용 스키마 변환·고정 분석 지시문
+    llm/transmission.ts          발췌 선택·민감 경로·마스킹·전송 버전
     index.ts                     공개 export
   database/
     src/schema.ts                소유자·저장소·원본 버전 테이블
@@ -65,6 +68,7 @@ tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI
 tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통합 검증
 tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌 참조 검증
 tests/analysis-validation.test.ts 분석 출력 형식·출처·확인 기록·응답 크기 검사
+tests/openai-analysis.test.ts    SDK 모형 fetch·전송 경계·예산·상태·사용량 검사
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -158,17 +162,17 @@ const input = await toEvidencePacket({
 
 발췌의 `id`, 텍스트, locator, 커밋/부모 OID, 경로와 `complete`를 보존하고 `reference`에 원본 레코드 ID·버전을 연결한다. `provenance.local`에는 추출 정책·명시적 묶기·선별/기여 정보·파일 manifest·blob OID·생략 사유·요약을 보존한다. 실행 시각·로컬 절대 경로·캐시 hit 등 보고서 실행 메타데이터는 포함하지 않는다. 입력 객체는 복사하므로 변환 중·후 원본의 변경이 반환값을 수정하지 않는다.
 
-현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 저장된 임의 JSON의 전체 런타임 스키마 검증기는 아니므로 입력 파싱·크기 제한은 추후 `analyze` CLI의 I/O 경계에서 처리해야 한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. 이 함수는 아직 CLI·DB·LLM 실행 흐름에 연결하지 않았다.
+현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 저장된 임의 JSON의 전체 런타임 스키마 검증기는 아니므로 입력 파싱·크기 제한은 추후 `analyze` CLI의 I/O 경계에서 처리해야 한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. 호출자는 변환 결과를 OpenAI 분석 어댑터에 전달할 수 있으며 CLI·DB 조립은 후속이다.
 
 분석 출력의 스키마 버전은 `ANALYSIS_SCHEMA_VERSION`(`work-item-analysis-v1`)이다. `WORK_ITEM_ANALYSIS_SCHEMA`는 기존 `WorkItemAnalysis`의 camelCase 필드를 따르는 draft-07 JSON Schema다. 각 문제·제약·대안·결정·구현·결과·검증·기여 배열은 `{ id, text, status, evidence }` 주장으로 구성하며 `user_confirmed`에만 `confirmationId`가 필요하다. 최상위와 내부 객체의 알 수 없는 필드, 빈 문자열·공백뿐인 문구, 잘못된 상태·타입을 거부한다. 섹션당 최대 32개 주장, 주장당 최대 20개 인용, 최대 20개 질문, 식별자 최대 512자와 문구·locator 최대 4,096자를 적용한다. 이 제한은 토큰 예산과 별도다. Ajv 설정은 형 변환·필드 삭제·기본값 삽입을 허용하지 않는다. 스키마 버전과 TypeScript 검증 연동은 [Ajv 공식 문서](https://ajv.js.org/guide/typescript.html)를 참고한다.
 
-`LlmProvider.analyze`의 원시 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 네트워크 응답의 중단·공급자 거부·종료 사유 검사는 실제 어댑터에서 추가해야 한다. 검증기는 응답 전체가 도착했다고 가정하며, 전송 상태를 알 수 없다.
+`LlmAnalysisProvider.analyze`의 공통 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 검증기 자체는 전송 상태를 알 수 없다. 구체적인 OpenAI 어댑터는 네트워크 응답·거부·종료 상태를 검사한 뒤 이 검증기를 실행하며, 성공 결과의 구체 타입은 `WorkItemAnalysis`다.
 
 런타임 검증은 `workItemId`와 `inputVersion`의 일치, 전체 섹션에서 주장 ID의 유일성, 모든 인용의 원본 ID·버전·locator가 실제 입력 발췌와 정확하게 일치하는지를 확인한다. 빈 발췌는 인용할 수 없으며 `source_supported`는 적어도 하나의 인용이 필요하다. `inferred`·`missing`은 근거 없이 남길 수 있다. 추출 패킷이 불완전해도 제한된 분석은 허용하며 원본의 `complete` 값을 변경하지 않는다. 인용의 존재가 해당 주장의 의미적 타당성, 테스트 실행 성공, 수치·선택 이유·개인 기여를 증명하지는 않는다. 이러한 판단과 최종 문장 출력 정책은 후속 검토 단계에서 다룬다.
 
 `ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. 확인 ID는 불변 기록을 식별해야 하며 실제 사용자 행동·권한·DB 존재 검사는 호출 계층의 책임이다. 확인 기록의 수집·영속화와 캐시 무효화는 아직 구현하지 않았다.
 
-실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. 분석 출력 검증도 아직 실제 LLM·저장·CLI 실행에는 연결하지 않았다.
+실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. OpenAI 어댑터는 분석 출력 검증을 호출하며 저장·CLI 조립은 후속이다.
 
 ### config
 
@@ -189,6 +193,8 @@ GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그와 로
 `git/local-evidence.ts`는 실제 객체와 저장된 메타데이터를 대조하고 root/첫 부모 raw diff를 읽는다. NUL·비 UTF-8·submodule을 구분하며 Node 프로세스에 blob 전체를 적재하지 않는다. patch의 hunk 위치는 유지하고 속성에 의존하는 함수명 suffix는 제거한다. Git 버전·설정·유효 속성도 캐시 식별에 반영한다. 옵션 의미는 [Git diff 문서](https://git-scm.com/docs/git-diff), 로컬 공통 디렉터리는 [Git rev-parse 문서](https://git-scm.com/docs/git-rev-parse)를 참고한다.
 
 현재는 전체 `RepositoryReader` 어댑터가 아닌 로컬 기간 수집·patch 추출 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
+
+`OpenAiAnalysisProvider`는 별도의 `LlmAnalysisProvider` 구현이다. OpenAI SDK는 providers 안에만 둔다. 키·모델·context window는 호출 시 설정하며 import와 생성자만으로 요청하지 않는다. 명시적 발췌 선택·민감 경로 제외·마스킹 후 지시문·스키마를 포함한 입력 토큰을 공급자 API로 계산하고 예산 내 분석 1회와 검증을 연결한다. 미완료·실패·거부·네트워크 오류를 성공 처리하지 않고 사용량을 기록한다. 실제 외부 API 호출을 수행하는 기능이므로 전송 정책과 [호출 계약](llm-analysis.md)을 따른다. CLI·DB·분석 결과 캐시는 아직 연결하지 않았다.
 
 ### database
 
@@ -292,7 +298,7 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 완료: workspace·lockfile, Nest 모듈과 독립 실행 골격, strict TypeScript 설정, 기본 API, CLI 진단·로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일/별칭 기반 후보 선별·참조 묶기·수동 포함/제외, 수동 커밋 묶기·제한된 근거 추출·추출 캐시, 분석 입력 변환·출처 연결·내용/입력 버전 검사, 공급자 카탈로그, 수집/LLM 계약, pg-boss runner, 초기 DB schema·SQL, 기본·Git·후보·근거·분석 입력 테스트.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 호출·LLM 분석 캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거를 제공한다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 수행하지 않는다.
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·LLM 분석 CLI·저장·캐시·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거를 제공한다. OpenAI 분석은 패키지 API로 제공하며 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 사용자 검토가 필요하다.
 
 ## 10. 관련 문서
 

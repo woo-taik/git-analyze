@@ -1,5 +1,7 @@
 # 저장소 수집 어댑터
 
+작업별 LLM 분석은 `OpenAiAnalysisProvider`로 제공한다. 명시적인 키·모델·context window와 검토한 발췌 ID가 필요하며 전송 제외/마스킹, 공급자 토큰 계산, 분석 1회, 응답·사용량·도메인 출력 검증을 수행한다. import·생성자만으로 요청하지 않는다. 분석 CLI·저장·결과 캐시·성과 생성은 후속이다. [분석 호출 계약](../../docs/llm-analysis.md)을 따른다.
+
 공통 계약은 `@git-analyze/core`의 `RepositoryReader`다.
 
 - Git CLI 수집: GitHub·SourceCommit·일반 원격·로컬 저장소의 공통 이력.

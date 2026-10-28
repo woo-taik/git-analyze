@@ -21,10 +21,21 @@ export interface LlmRequestOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface LlmAnalysisRequestOptions extends LlmRequestOptions {
+  readonly transmission: {
+    // Explicitly reviewed excerpts; token counting also sends these to the provider.
+    readonly allowedExcerptIds: readonly string[];
+    readonly redactValues?: readonly string[];
+  };
+}
+
+export interface LlmAnalysisProvider {
+  // Raw provider output is unknown until validated by the adapter/application.
+  analyze(packet: EvidencePacket, options: LlmAnalysisRequestOptions): Promise<LlmResult<unknown>>;
+}
+
 // An integration contract only: no SDK, credentials or network side effects.
-export interface LlmProvider {
-  // Model output remains untrusted until validateWorkItemAnalysis succeeds.
-  analyze(packet: EvidencePacket, options: LlmRequestOptions): Promise<LlmResult<unknown>>;
+export interface LlmProvider extends LlmAnalysisProvider {
   generate(input: {
     readonly analyses: readonly WorkItemAnalysis[];
     readonly language: string;

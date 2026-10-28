@@ -16,6 +16,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 - [제품 요구사항](docs/product-requirements.md): 분석 단위, 성과의 근거, 기간 규칙, MVP 범위.
 - [기술 스택 및 아키텍처](docs/architecture.md): 권장 구성, 대안 비교, 수집·저장·작업 처리 설계.
 - [LLM 비용 및 토큰 설계](docs/llm-efficiency.md): 재사용, 입력 예산, 캐시, 품질 평가와 비용 측정.
+- [LLM 분석 어댑터](docs/llm-analysis.md): OpenAI 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
 - [구현 순서](docs/implementation-plan.md): 단계별 산출물과 완료 조건.
 - [다중 저장소 공급자 지원](docs/repository-providers.md): 공통 Git 수집, GitHub·SourceCommit 연결, 추적 가능 범위와 한계.
 - [프로젝트 구조와 개발 방법](docs/project-structure.md): 전체 디렉터리, 앱·패키지 책임, 의존성 방향, 기능 추가 규칙, 실행·검증·DB 관리와 구현 범위.
@@ -25,7 +26,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출은 CLI에서 실행할 수 있다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI, 실제 LLM 어댑터는 후속 구현이다.
+로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출은 CLI에서 실행할 수 있다. OpenAI 작업 분석 어댑터는 패키지 API로 제공하며 CLI 조립·분석 저장·재사용은 후속이다. 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI도 아직 없다.
 
 ## 시작
 
@@ -117,10 +118,12 @@ pnpm start:api
 DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db:migrate`를 실행한다. 생성 SQL은 `packages/database/migrations`에 있다.
 
 현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 분석 입력 변환·원본 매핑·내용/입력 버전 검사, 초기 DB schema/migration, 기본·Git·후보·근거·분석 입력 테스트.
-미구현: 원격 동기화·LLM 분석·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
+미구현: 원격 동기화·LLM 분석 CLI/저장/재사용·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
 분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. 아직 CLI·DB·LLM에는 연결하지 않았다. 사용 계약은 [프로젝트 구조](docs/project-structure.md)의 core 설명을 따른다.
 
-분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 모델 응답은 검증 전 `unknown`으로 취급한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 실제 LLM 호출·확인 기록 저장·CLI 조립은 후속이다.
+분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 확인 기록 저장·CLI 조립은 후속이다.
+
+`OpenAiAnalysisProvider`는 명시한 키·모델·context window로 선택된 발췌를 분석한다. 민감 경로 제외·문자열 마스킹 후 지시문·출력 스키마까지 포함한 전체 입력을 계산하고, 예산 내에서 분석 1회와 출력 검증을 수행한다. 계산 요청도 외부 전송이므로 검토한 발췌 ID를 명시해야 한다. SDK 모형 테스트를 통과했으며 실제 모델 접속·품질·청구는 아직 검증하지 않았다. [호출 계약과 제한](docs/llm-analysis.md)을 따른다.
 
 작성 기준일: 2026-10-26, Asia/Seoul.
