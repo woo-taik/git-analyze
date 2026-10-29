@@ -18,6 +18,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 - [LLM 비용 및 토큰 설계](docs/llm-efficiency.md): 재사용, 입력 예산, 캐시, 품질 평가와 비용 측정.
 - [LLM 분석 어댑터](docs/llm-analysis.md): OpenAI 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
 - [분석 CLI 사용법](docs/analysis-cli.md): 원본 연결 파일, 전송 미리보기, 분석 저장과 호출 없는 캐시 재사용.
+- [사용자 검토와 성과 문장](docs/review-resume-cli.md): 보충·편집·확인/철회, 재분석 시 편집 보존과 근거를 추적하는 문장 출력.
 - [구현 순서](docs/implementation-plan.md): 단계별 산출물과 완료 조건.
 - [다중 저장소 공급자 지원](docs/repository-providers.md): 공통 Git 수집, GitHub·SourceCommit 연결, 추적 가능 범위와 한계.
 - [프로젝트 구조와 개발 방법](docs/project-structure.md): 전체 디렉터리, 앱·패키지 책임, 의존성 방향, 기능 추가 규칙, 실행·검증·DB 관리와 구현 범위.
@@ -27,7 +28,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 OpenAI 구조화 분석을 CLI에서 실행할 수 있다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·확인·성과 문장, 원격 fetch·clone, Octokit 보강, React + Vite 검토 UI는 후속이다.
+로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 OpenAI 구조화 분석을 CLI에서 실행할 수 있다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·편집·확인/철회와 한 건의 성과 문장 출력도 로컬 CLI로 연결했다. 원격 fetch·clone, Octokit 보강, 기간별 다중 작업 조합과 React + Vite 검토 UI는 후속이다.
 
 ## 시작
 
@@ -115,6 +116,16 @@ pnpm cli analyze --input ".data\law-evidence\evidence.json" --bindings ".data\la
 
 `--dry-run`은 키·외부 호출 없이 전송 미리보기를 저장한다. 실제 분석은 `OPENAI_API_KEY`를 설정하고 `--dry-run`을 제거해 새 출력 폴더로 실행한다. 토큰 계산도 외부 전송이다. 동일 요청은 키 없이도 외부 호출 0회로 재사용한다. 입력 형식·마스킹·예산·실패·캐시 계약은 [분석 CLI 사용법](docs/analysis-cli.md)을 따른다.
 
+## 사용자 확인 후 성과 문장 출력
+
+```powershell
+pnpm cli review --analysis ".data\law-analysis\analysis.json" --output ".data\law-review-initial"
+pnpm cli review --analysis ".data\law-analysis\analysis.json" --changes ".data\changes.json" --actor "사용자 식별명" --output ".data\law-review-approved"
+pnpm cli resume --review ".data\law-review-approved\review.json" --claim "implementation-1" --claim "user-result-1" --claim "contribution-1" --output ".data\law-resume"
+```
+
+두 명령은 키 없이 외부 요청 0회로 동작한다. 보충·편집은 미확인으로 저장하고 정확한 문구를 확인한 뒤 사용한다. 기본 완료 성과에는 결과·완료 확인과 사용자 확인된 본인 기여가 필요하다. 문장은 선택한 주장 문구를 연결하고 각 절의 원본과 확인 기록을 보존한다. 철회 후 오래된 검토 보고서로 새 문장을 출력할 수 없다. 입력 형식과 재분석 시 편집 보존은 [검토 CLI 사용법](docs/review-resume-cli.md)을 따른다.
+
 - `GET /health`: 프로세스 생존 확인.
 - `GET /ready`: 업무 파이프라인 미구현 상태이므로 현재 503을 반환.
 - `GET /v1/providers`: 공급자별 문서상 기능과 구현 예정 상태.
@@ -130,12 +141,13 @@ DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db
 
 현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 분석 입력 변환·원본 매핑·내용/입력 버전 검사, 초기 DB schema/migration, 기본·Git·후보·근거·분석 입력 테스트.
 추가 완료: 근거 파일 런타임 검증·명시적 원본 매핑, 분석 CLI·오프라인 전송 미리보기·분석/실패 저장·사용량 기록·분석 캐시와 동시 miss 차단.
-미구현: 원격 동기화·DB 분석 저장·사용자 보충/확인·성과 생성·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
+추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 시 초안 보존, 최신 검토 상태 기반 한 건의 성과/활동 문장과 절별 추적.
+미구현: 원격 동기화·DB 분석/검토 저장·기간별 다중 작업 성과 조합·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
 분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. CLI는 파일 검증 후 이 변환을 분석 어댑터에 연결한다. DB 원본 등록은 후속이다.
 
-분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. 인용의 존재 검사는 의미적 사실성 판단을 대신하지 않으며 확인 기록 저장은 후속이다.
+분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. `review`가 로컬 사용자 행동에서 확인 기록을 생성하고 저장한다. 인용과 확인의 존재 검사는 의미적 사실성 판단을 대신하지 않는다.
 
 `OpenAiAnalysisProvider`는 명시한 키·모델·context window로 선택된 발췌를 분석한다. 민감 경로 제외·문자열 마스킹 후 지시문·출력 스키마까지 포함한 전체 입력을 계산하고, 예산 내에서 분석 1회와 출력 검증을 수행한다. 계산 요청도 외부 전송이므로 검토한 발췌 ID를 명시해야 한다. SDK 모형 테스트를 통과했으며 실제 모델 접속·품질·청구는 아직 검증하지 않았다. [호출 계약과 제한](docs/llm-analysis.md)을 따른다.
 
-작성 기준일: 2026-10-28, Asia/Seoul.
+작성 기준일: 2026-10-29, Asia/Seoul.

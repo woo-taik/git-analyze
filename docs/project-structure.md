@@ -1,6 +1,6 @@
 # 프로젝트 구조와 개발 방법
 
-기준일: 2026-10-28, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
+기준일: 2026-10-29, Asia/Seoul. 현재 소스와 package 설정을 기준으로 작성했다.
 
 ## 1. 구조의 목적
 
@@ -22,13 +22,17 @@ apps/
   cli/src/
     index.ts                     Nest standalone 진입점과 종료
     cli.module.ts
-    command.service.ts           help·doctor·providers·collect·prepare·evidence·analyze 명령
+    command.service.ts           진단·수집·후보·근거·분석·검토·문장 명령
     collect-options.ts           수집 옵션·경로 필터·KST 기간 계산
     history-report.ts            수집 Markdown·공용 JSON/Markdown 새 폴더 출력
     prepare.ts                   저장된 이력 입력 검증·후보 선별 조립
     candidate-report.ts          후보·검토·제외 Markdown과 원본 출처
     evidence.ts                  후보 입력·수동 묶기·근거 추출 조립·캐시·보고서
     analyze.ts                   전송 선택·미리보기·분석·캐시·실패 조립
+    saved-analysis.ts            원본 근거 대조·저장된 전송/마스킹/분석 복원 검증
+    review.ts                    사용자 행동 파일·검토 조립과 보고서
+    review-store.ts              범위별 lock·불변 검토 버전·HEAD 교체
+    resume.ts                    최신 검토 상태 기반 문장 출력·절별 근거 추적
     analysis-input.ts            크기 제한 UTF-8 JSON·원본 연결 파일 입력
     analysis-cache.ts            분석 키·저장 결과 재검증·원자적 캐시 파일 저장
     analysis-report.ts           새 출력 폴더·분석/실패/미리보기 보고서
@@ -50,6 +54,8 @@ packages/
     analysis-evidence.ts         분석 입력 변환·원본 매핑 검사·내용/입력 버전
     analysis-schema.ts           공급자 독립 분석 출력 JSON Schema·버전
     analysis-validation.ts       분석 출력 파싱·주장/출처/사용자 확인 검사
+    review.ts                    보충·편집·확인/철회·완료·재분석 편집 보존 정책
+    resume.ts                    성과/활동 출력 조건·기존 주장 문장 조합·문자 위치
     canonical-json.ts            추출·분석에 공통인 정규화 JSON 직렬화
     index.ts                     공개 export
   config/src/index.ts            환경 설정 검증과 기본값
@@ -75,6 +81,7 @@ tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌
 tests/analysis-validation.test.ts 분석 출력 형식·출처·확인 기록·응답 크기 검사
 tests/openai-analysis.test.ts    SDK 모형 fetch·전송 경계·예산·상태·사용량 검사
 tests/analyze.test.ts            CLI 입력·미리보기·저장·캐시·실패·동시 호출 검사
+tests/review-resume.test.ts      확인/철회·편집 보존·최신 버전·문장 근거·오프라인 CLI
 docs/                            요구사항·설계·구현 계획
 package.json                     실행 명령·도구 버전
 pnpm-workspace.yaml              workspace·의존성 빌드 정책
@@ -113,6 +120,8 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `prepare`: 저장한 `history.json`과 작성자 이메일/별칭으로 후보·검토·제외를 선별하고 JSON·Markdown을 생성한다. Git·DB·LLM에 연결하지 않는다.
 - `evidence`: 저장한 후보에서 그룹 하나 또는 명시한 커밋들을 선택하고, 로컬 객체 검증 후 크기를 제한한 patch 근거와 추출 캐시를 생성한다. DB·LLM을 사용하지 않는다.
 - `analyze`: 저장한 근거와 명시적 원본 연결·발췌 선택을 검증하고 OpenAI 분석 초안을 JSON·Markdown으로 저장한다. `--dry-run`은 키 없이 오프라인 미리보기를 생성하며 동일 요청은 외부 호출 없이 로컬 캐시를 재사용한다.
+- `review`: 저장된 분석과 원본 근거를 재검증하고 사용자 보충·편집·확인/철회·완료 판단을 별도 로컬 버전으로 저장한다. 외부 호출은 없다.
+- `resume`: 최신 검토 버전을 검사하고 선택한 사실 문구를 한 문장으로 조합한다. 완료 성과와 활동 초안을 구분하고 절별 Git 원본/사용자 확인 기록을 보존한다. 외부 호출은 없다.
 
 호출 흐름은 `CommandService → parseCollectOptions → collectLocalHistory → writeHistoryReports`다. `--repo`는 필수이며 `--period`는 `1w`·`1m`·`3m`·`6m`, `--ref`는 기본 `HEAD`다. `--path`는 Git 저장소 루트 기준 상대 경로를 지정하고, `--output`은 새 출력 폴더를 지정한다.
 
@@ -123,6 +132,8 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 캐시 재사용 전에도 원본 메타데이터·ref 기준 도달 가능성·파일 목록·blob 존재를 확인한다. 추출 키와 패킷 내용 hash는 별도다. 실행/관측 시각·출력 경로·기간은 패킷 내용에 넣지 않고 보고서의 출처 정보로 둔다. 서로 다른 clone은 별도 범위이며 로컬 범위 식별은 HTTP 인증·인가를 대신하지 않는다.
 
 분석 흐름은 `executeAnalyze → loadAnalysisInput/validateLocalEvidencePacket → toEvidencePacket → prepareOpenAiAnalysisRequest → 미리보기 또는 검증된 분석 캐시/어댑터 → 보고서`다. 소유자·저장소·작업과 원본 ID·버전을 `--bindings` 파일로 명시한다. 발췌는 반복 `--excerpt`로 선택하고 마스킹은 JSON 파일로 입력한다. 실제 분석 전 출력 폴더를 확보하고, 캐시 miss의 동시 중복 호출은 키별 lock으로 차단한다. 실패를 성공 캐시에 저장하지 않으며 손상 캐시는 자동 재호출하지 않는다. 자세한 명령·입력·실패/캐시 계약은 [분석 CLI 사용법](analysis-cli.md)을 따른다.
+
+검토 흐름은 `executeReview → loadSavedAnalysis → 범위별 lock → 현재 검토 버전 로드 → 사용자 행동/명시적 rebase → 불변 버전/HEAD 저장 → 보고서`다. 문장은 `executeResume → 같은 lock → 최신 버전/원본/확인 재검증 → composeResumeBullet → 절별 trace와 보고서`로 출력한다. 변경된 검토 보고서의 이전 스냅샷으로 새 문장을 출력할 수 없다. 원시 모델 분석 캐시와 사용자 검토를 분리해 재분석이 사용자 수정을 덮어쓰지 않게 한다. [검토·문장 CLI 사용법](review-resume-cli.md)을 따른다.
 
 ### 워커
 
@@ -177,9 +188,9 @@ const input = await toEvidencePacket({
 
 `LlmAnalysisProvider.analyze`의 공통 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 검증기 자체는 전송 상태를 알 수 없다. 구체적인 OpenAI 어댑터는 네트워크 응답·거부·종료 상태를 검사한 뒤 이 검증기를 실행하며, 성공 결과의 구체 타입은 `WorkItemAnalysis`다.
 
-런타임 검증은 `workItemId`와 `inputVersion`의 일치, 전체 섹션에서 주장 ID의 유일성, 모든 인용의 원본 ID·버전·locator가 실제 입력 발췌와 정확하게 일치하는지를 확인한다. 빈 발췌는 인용할 수 없으며 `source_supported`는 적어도 하나의 인용이 필요하다. `inferred`·`missing`은 근거 없이 남길 수 있다. 추출 패킷이 불완전해도 제한된 분석은 허용하며 원본의 `complete` 값을 변경하지 않는다. 인용의 존재가 해당 주장의 의미적 타당성, 테스트 실행 성공, 수치·선택 이유·개인 기여를 증명하지는 않는다. 이러한 판단과 최종 문장 출력 정책은 후속 검토 단계에서 다룬다.
+런타임 검증은 `workItemId`와 `inputVersion`의 일치, 전체 섹션에서 주장 ID의 유일성, 모든 인용의 원본 ID·버전·locator가 실제 입력 발췌와 정확하게 일치하는지를 확인한다. 빈 발췌는 인용할 수 없으며 `source_supported`는 적어도 하나의 인용이 필요하다. `inferred`·`missing`은 근거 없이 남길 수 있다. 추출 패킷이 불완전해도 제한된 분석은 허용하며 원본의 `complete` 값을 변경하지 않는다. 인용의 존재가 의미적 사실성·테스트 성공·개인 기여를 자동 증명하지 않는다. core의 검토·문장 정책은 별도 사용자 확인과 출력 자격을 검사한다.
 
-`ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. 확인 ID는 불변 기록을 식별해야 하며 실제 사용자 행동·권한·DB 존재 검사는 호출 계층의 책임이다. 확인 기록의 수집·영속화와 캐시 무효화는 아직 구현하지 않았다.
+`ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. `review`는 명시적 사용자 행동으로 확인 ID와 actor·시각을 기록하고 로컬 버전으로 보존한다. 편집·철회·rebase는 과거 기록을 보존하며 후속 문장을 무효화한다. 다중 사용자 인증·권한·DB 존재 검사는 후속이다.
 
 실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. OpenAI 어댑터와 CLI 캐시 hit 모두 분석 출력 검증을 호출한다.
 
@@ -291,6 +302,8 @@ Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거
 
 분석 CLI 테스트는 실제 추출 보고서 연결, 불량 UTF-8·JSON·근거/매핑 거부, 키 없는 전송 미리보기, 모형 SDK 분석 저장, 동일 요청의 외부 호출 0회, 모델/epoch·범위·설정별 분리, 기간만 바뀐 입력 재사용, 손상 캐시·동시 miss 차단, 마스킹·기존 출력 보존·실패 사용량 저장과 빌드된 Nest CLI를 확인한다.
 
+검토·문장 테스트는 저장 분석 복원·마스킹/생략 검증, 답변과 확인 구분·질문 해결/재개, 편집과 확인 철회, 완료/활동 출력 조건, 재분석 편집 보존·이전 승인 무효화, 잘못된 배치의 HEAD 보존, 손상/잠금 거부와 HEAD 갱신 실패 후 온전한 버전 재사용을 확인한다. 실제 SDK 모형 분석부터 검토·문장까지 연결하고 절별 Git/사용자 확인·문자 위치를 검사하며 빌드된 Nest CLI를 API 키 없이 실행한다.
+
 ## 8. DB와 migration
 
 `.env`의 `DATABASE_URL`을 설정하고, 로컬 Docker를 사용할 경우 다음 순서로 실행한다.
@@ -311,7 +324,9 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 추가 완료: 분석 근거 런타임 검증·명시적 원본 연결, 분석 CLI·오프라인 전송 미리보기·분석/실패 JSON/Markdown 저장·분석 결과 캐시와 동시 miss 차단.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·DB 분석 저장·사용자 보충/확인·이력서 생성·인증과 소유권 검사·검토 UI. `collect`는 원본 메타데이터, `prepare`는 분석 대상, `evidence`는 선택된 변경 근거, `analyze`는 분석 초안을 제공한다. 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위 확정·문제 해결 판단·업무 완료 판단은 사용자 검토가 필요하다.
+추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 편집 초안 보존, 최신 검토 버전 기반 한 작업의 성과/활동 문장과 절별 근거 추적.
+
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·DB 분석/검토 저장·기간별 다중 작업 선택과 문장 조합·인증과 소유권 검사·검토 UI. 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
 
 ## 10. 관련 문서
 

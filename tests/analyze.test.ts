@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { executeAnalyze } from '../apps/cli/src/analyze.js';
 import { hash } from '../apps/cli/src/analysis-cache.js';
 import { loadAnalysisInput, readBoundedJson } from '../apps/cli/src/analysis-input.js';
+import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
 import { buildLocalEvidence, canonicalJson, validateLocalEvidencePacket, type LocalEvidencePacket } from '../packages/core/src/index.js';
 
 const execute = promisify(execFile);
@@ -276,6 +277,22 @@ describe('analysis CLI assembly', () => {
     expect(serialized).not.toContain('PRIVATE_VALUE');
     expect(JSON.stringify(network.requests)).not.toMatch(/PRIVATE_VALUE|ENV_SECRET_MUST_STAY_LOCAL/);
     expect(JSON.parse(serialized).transmission).toMatchObject({ complete: false, redactedExcerptIds: [patch.id] });
+    const restored = await loadSavedAnalysis(saved.jsonPath);
+    expect(restored.baseline.packet.excerpts.some((excerpt) => excerpt.text.includes('[REDACTED]'))).toBe(true);
+  });
+
+  it('restores a saved analysis when explicitly selected sensitive paths and empty messages were omitted', async () => {
+    const changed = structuredClone(local);
+    const message = changed.excerpts.find((excerpt) => excerpt.path === null)!;
+    (changed.summary as { excerptBytes: number }).excerptBytes -= Buffer.byteLength(message.text);
+    (message as { text: string }).text = '';
+    const source = await jsonFile('empty-message', report(changed));
+    const network = harness();
+    const result = await executeAnalyze(args(runPaths(), ['--input', source,
+      '--excerpt', changed.excerpts.find((excerpt) => excerpt.path === '.env')!.id]), { ...network, env });
+    const restored = await loadSavedAnalysis(result.jsonPath);
+    expect(restored.baseline.packet.excerpts).toHaveLength(1);
+    expect(restored.baseline.packet.complete).toBe(false);
   });
 
   it('saves failures and their usage without putting them into the successful result cache', async () => {

@@ -1,6 +1,6 @@
 # 저장소 수집 어댑터
 
-작업별 LLM 분석은 `OpenAiAnalysisProvider`로 제공한다. 명시적인 키·모델·context window와 검토한 발췌 ID가 필요하며 전송 제외/마스킹, 공급자 토큰 계산, 분석 1회, 응답·사용량·도메인 출력 검증을 수행한다. import·생성자만으로 요청하지 않는다. `prepareOpenAiAnalysisRequest`는 미리보기와 실제 호출이 공유하는 순수 요청 조립 함수다. CLI에 분석·로컬 저장·결과 캐시를 연결했으며 사용자 확인·성과 생성은 후속이다. [분석 호출 계약](../../docs/llm-analysis.md)과 [CLI 사용법](../../docs/analysis-cli.md)을 따른다.
+작업별 LLM 분석은 `OpenAiAnalysisProvider`로 제공한다. 명시적인 키·모델·context window와 검토한 발췌 ID가 필요하며 전송 제외/마스킹, 공급자 토큰 계산, 분석 1회, 응답·사용량·도메인 출력 검증을 수행한다. import·생성자만으로 요청하지 않는다. `prepareOpenAiAnalysisRequest`는 미리보기와 실제 호출이 공유하는 순수 요청 조립 함수다. CLI에 분석·로컬 저장·결과 캐시를 연결했다. 사용자 확인과 한 작업의 문장은 별도의 오프라인 core/CLI 정책으로 처리하며 LLM 문장 생성 어댑터는 아직 없다. [분석 호출 계약](../../docs/llm-analysis.md), [분석 CLI](../../docs/analysis-cli.md), [검토·문장 CLI](../../docs/review-resume-cli.md)를 따른다.
 
 공통 계약은 `@git-analyze/core`의 `RepositoryReader`다.
 

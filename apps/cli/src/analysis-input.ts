@@ -42,7 +42,12 @@ function timestamp(value: unknown): string {
 
 export async function loadAnalysisInput(inputPath: string, bindingsPath: string) {
   const inputFile = resolve(inputPath);
-  const report = object(await readBoundedJson(inputFile, 32 * 1024 * 1024));
+  return parseAnalysisInput(await readBoundedJson(inputFile, 32 * 1024 * 1024),
+    await readBoundedJson(resolve(bindingsPath), 1_048_576), inputFile);
+}
+
+export async function parseAnalysisInput(value: unknown, sourceBindings: unknown, inputFile: string) {
+  const report = object(value);
   if (report.schemaVersion !== 1 || typeof report.contentVersion !== 'string' || !/^[a-f0-9]{64}$/.test(report.contentVersion)) {
     throw new Error('Unsupported evidence report schema or content version');
   }
@@ -61,7 +66,7 @@ export async function loadAnalysisInput(inputPath: string, bindingsPath: string)
     || Date.parse(commit.committedAt) >= Date.parse(endAt))) {
     throw new Error('Evidence commit is outside the declared report period');
   }
-  const bindings = object(await readBoundedJson(resolve(bindingsPath), 1_048_576));
+  const bindings = object(sourceBindings);
   if (bindings.schemaVersion !== 1 || !Array.isArray(bindings.sources) || bindings.sources.length > 20) {
     throw new Error('Unsupported source bindings schema');
   }

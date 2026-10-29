@@ -9,3 +9,5 @@ export * from './canonical-json.js';
 export * from './analysis-schema.js';
 export * from './analysis-validation.js';
 export * from './local-evidence-validation.js';
+export * from './review.js';
+export * from './resume.js';

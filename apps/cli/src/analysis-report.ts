@@ -6,15 +6,15 @@ import type { prepareOpenAiAnalysisRequest } from '@git-analyze/providers';
 import { escapeMarkdownText as text } from './history-report.js';
 import type { loadAnalysisInput } from './analysis-input.js';
 
-export async function reserveAnalysisDirectory(output: string | undefined) {
-  const directory = resolve(output ?? join('.data', 'analyses', `${Date.now()}-${randomUUID().slice(0, 8)}`));
+export async function reserveAnalysisDirectory(output: string | undefined, category = 'analyses') {
+  const directory = resolve(output ?? join('.data', category, `${Date.now()}-${randomUUID().slice(0, 8)}`));
   await mkdir(dirname(directory), { recursive: true });
   try { await mkdir(directory); }
   catch { throw new Error('Output directory already exists or cannot be created. Choose a new --output directory.'); }
   return directory;
 }
 
-export async function saveAnalysisReports(directory: string, stem: 'preview' | 'analysis' | 'failure', data: unknown, markdown: string) {
+export async function saveAnalysisReports(directory: string, stem: 'preview' | 'analysis' | 'failure' | 'review' | 'resume', data: unknown, markdown: string) {
   const jsonPath = join(directory, `${stem}.json`);
   const markdownPath = join(directory, `${stem}.md`);
   await writeFile(jsonPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
@@ -47,10 +47,11 @@ export function renderPreviewMarkdown(source: Source, prepared: ReturnType<typeo
 
 const labels: Record<(typeof ANALYSIS_CLAIM_FIELDS)[number], string> = { problem: '문제', constraints: '제약',
   alternatives: '대안', decision: '선택과 이유', implementation: '구현', results: '결과', verification: '검증', contribution: '기여' };
-export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, cacheHit: boolean, complete: boolean): string {
+export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, cacheHit: boolean, complete: boolean, reviewed = false): string {
   const lines = ['# 작업 분석 초안', '', ...analysisSourceLines(source), `- 분석 입력 버전: ${value.inputVersion}`,
     `- 전송 근거 완전성: ${complete}; 캐시 재사용: ${cacheHit}`, '',
-    '사용자 확인 전의 구조화 분석이다. 인용의 존재가 내용의 사실성·업무 완료·테스트 성공을 보장하지 않는다.',
+    reviewed ? '사용자 검토 상태를 반영한 분석이다. 미확인·추정 주장은 성과 문장에 포함하지 않는다.'
+      : '사용자 확인 전의 구조화 분석이다. 인용의 존재가 내용의 사실성·업무 완료·테스트 성공을 보장하지 않는다.',
     '캐시 재사용 시 usage는 최초 생성의 사용량이며 이번 실행의 새 청구량이 아니다.', ''];
   for (const field of ANALYSIS_CLAIM_FIELDS) {
     lines.push(`## ${labels[field]}`, '');
