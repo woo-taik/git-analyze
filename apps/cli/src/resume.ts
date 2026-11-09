@@ -1,10 +1,10 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { composeResumeBullet, RESUME_POLICY_VERSION } from '@git-analyze/core';
+import { composeResumeBullet, RESUME_POLICY_VERSION, type ReviewContext } from '@git-analyze/core';
 import { hash } from './analysis-cache.js';
 import { object, readBoundedJson } from './analysis-input.js';
 import { analysisSourceLines, renderAnalysisMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
-import { loadStoredReview, reviewScope, withReviewLock } from './review-store.js';
+import { loadStoredReview, reviewScope, withReviewLock, type ReviewScope } from './review-store.js';
 import { escapeMarkdownText as text } from './history-report.js';
 
 export async function readResumeSnapshot(path: string, storeOverride?: string) {
@@ -21,8 +21,14 @@ export async function loadCurrentResumeReview(directory: string, snapshot: Await
   return current;
 }
 
-export function buildResumeDraft(current: Awaited<ReturnType<typeof loadCurrentResumeReview>>, claimIds: readonly string[],
-  kind: 'achievement' | 'activity') {
+type LocalReview = Awaited<ReturnType<typeof loadCurrentResumeReview>>;
+type ResumeReview = Pick<LocalReview, 'version'> & {
+  context: ReviewContext;
+  stored: Pick<LocalReview['stored'], 'state' | 'revision'>;
+  saved: Pick<LocalReview['saved'], 'source'>;
+};
+
+export function buildResumeDraft(current: ResumeReview, claimIds: readonly string[], kind: 'achievement' | 'activity') {
   const bullet = composeResumeBullet(current.stored.state, current.context, claimIds, kind);
   const trace = bullet.clauses.map((clause) => ({ ...clause,
     confirmation: clause.confirmationId === null ? null : {
@@ -46,6 +52,23 @@ export function renderResumeTrace(trace: ReturnType<typeof buildResumeDraft>['tr
   ]);
 }
 
+export async function writeResumeDraft(scope: ReviewScope, current: ResumeReview, claimIds: readonly string[],
+  kind: 'achievement' | 'activity', outputDirectory: string | undefined) {
+  const draft = buildResumeDraft(current, claimIds, kind);
+  const { bullet, trace, version } = draft;
+  const result = { schemaVersion: 1, status: 'resume_draft', createdAt: new Date().toISOString(), scope, ...draft };
+  const output = await reserveAnalysisDirectory(outputDirectory, 'resumes');
+  const markdown = [`# ${bullet.kind === 'achievement' ? '완료 성과' : '활동'} 문장 초안`, '', `> ${text(bullet.text)}`, '',
+    ...analysisSourceLines(current.saved.source), `- 검토 버전: ${current.version}`, `- 문장 버전: ${version}`,
+    `- 사용자 확인 완료일: ${bullet.completion?.completedAt ?? '(미확인)'}`, '',
+    '각 절은 선택한 주장 문구를 공백·끝 문장부호만 정리해 세미콜론으로 연결했다. 의미적 사실성과 문체는 사용자 검토가 필요하다.',
+    '수집 기간은 활동 범위이며 완료일로 자동 해석하지 않는다. 철회 전 출력 파일은 당시 버전의 이력으로 남는다.', '',
+    '## 문장 근거', '', ...renderResumeTrace(trace), '',
+    renderAnalysisMarkdown(current.stored.state.analysis, current.saved.source, false, current.context.packet.complete, true)].join('\n');
+  const files = await saveAnalysisReports(output, 'resume', result, markdown);
+  return { status: 'resume_draft' as const, kind: bullet.kind, version, externalRequests: 0, ...files };
+}
+
 export async function executeResume(args: readonly string[]) {
   const { values } = parseArgs({ args: [...args], strict: true, allowPositionals: false, options: {
     review: { type: 'string' }, claim: { type: 'string', multiple: true }, kind: { type: 'string' },
@@ -58,18 +81,6 @@ export async function executeResume(args: readonly string[]) {
   const { scope, storeDirectory } = snapshot;
   return withReviewLock(storeDirectory, scope, async (directory) => {
     const current = await loadCurrentResumeReview(directory, snapshot);
-    const draft = buildResumeDraft(current, values.claim!, values.kind === 'activity' ? 'activity' : 'achievement');
-    const { bullet, trace, version } = draft;
-    const result = { schemaVersion: 1, status: 'resume_draft', createdAt: new Date().toISOString(), scope, ...draft };
-    const output = await reserveAnalysisDirectory(values.output, 'resumes');
-    const markdown = [`# ${bullet.kind === 'achievement' ? '완료 성과' : '활동'} 문장 초안`, '', `> ${text(bullet.text)}`, '',
-      ...analysisSourceLines(current.saved.source), `- 검토 버전: ${current.version}`, `- 문장 버전: ${version}`,
-      `- 사용자 확인 완료일: ${bullet.completion?.completedAt ?? '(미확인)'}`, '',
-      '각 절은 선택한 주장 문구를 공백·끝 문장부호만 정리해 세미콜론으로 연결했다. 의미적 사실성과 문체는 사용자 검토가 필요하다.',
-      '수집 기간은 활동 범위이며 완료일로 자동 해석하지 않는다. 철회 전 출력 파일은 당시 버전의 이력으로 남는다.', '',
-      '## 문장 근거', '', ...renderResumeTrace(trace), '',
-      renderAnalysisMarkdown(current.stored.state.analysis, current.saved.source, false, current.context.packet.complete, true)].join('\n');
-    const files = await saveAnalysisReports(output, 'resume', result, markdown);
-    return { status: 'resume_draft' as const, kind: bullet.kind, version, externalRequests: 0, ...files };
+    return writeResumeDraft(scope, current, values.claim!, values.kind === 'activity' ? 'activity' : 'achievement', values.output);
   });
 }

@@ -75,7 +75,7 @@ export async function loadSavedAnalysis(path: string) {
   const result = validateAnalysisResult(report.result, restored, settings);
   if (object(report.cache).key !== analysisCacheKey(restored, settings)) throw new Error('Saved analysis cache identity does not match');
   const baseline = { packet: restored.validationPacket, analysis: result.value };
-  return { analysisFile, ...loaded, baseline, analysisVersion: hash({ ownerId: packet.ownerId, repositoryId: packet.repositoryId,
+  return { analysisFile, ...loaded, baseline, result, analysisVersion: hash({ ownerId: packet.ownerId, repositoryId: packet.repositoryId,
     workItemId: packet.workItemId, inputVersion: baseline.packet.version, analysis: baseline.analysis }) };
 }
 

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, rmdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,7 @@ import { executeAnalyze } from '../apps/cli/src/analyze.js';
 import { executeReview } from '../apps/cli/src/review.js';
 import { executeResume } from '../apps/cli/src/resume.js';
 import { executeResumePeriod } from '../apps/cli/src/resume-period.js';
+import { executeDbArchive, executeResumeDb } from '../apps/cli/src/work-archive.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
 import { hash } from '../apps/cli/src/analysis-cache.js';
 import { loadStoredReview, persistReview, reviewDirectory } from '../apps/cli/src/review-store.js';
@@ -20,12 +22,15 @@ const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const oid = 'a'.repeat(40);
 const question = '실제 테스트 실행 결과는 무엇인가요?';
 const actor = { actor: 'fixture-user', recordedAt: '2026-10-29T00:00:00Z' };
+const testDatabaseUrl = process.env.GIT_ANALYZE_TEST_DATABASE_URL;
+const archiveOwnerId = `archive-test-${randomUUID()}`;
 let temporaryBase: string;
 let root: string;
 let analysisFile: string;
 let alternateFile: string;
 let redactedFile: string;
 let activityFile: string;
+let archiveFile: string;
 let sequence = 0;
 let saved: Awaited<ReturnType<typeof loadSavedAnalysis>>;
 const json = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
@@ -73,6 +78,8 @@ beforeAll(async () => {
   const bindings = await save({ schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', workItemId: 'work',
     sources: [{ ownerId: 'owner', repositoryId: 'repo', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] });
   const activityBindings = await save({ ...await json(bindings), workItemId: 'ongoing-work' });
+  const archiveBindings = testDatabaseUrl ? await save({ ...await json(bindings), ownerId: archiveOwnerId,
+    sources: [{ ownerId: archiveOwnerId, repositoryId: 'repo', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] }) : null;
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     if (String(url).endsWith('/input_tokens')) return Response.json({ object: 'response.input_tokens', input_tokens: 1200 });
     const body = JSON.parse(init!.body as string);
@@ -88,14 +95,17 @@ beforeAll(async () => {
       content: [{ type: 'output_text', text: JSON.stringify(value) }] }], usage: { input_tokens: 1200, output_tokens: 300, total_tokens: 1500,
       input_tokens_details: { cached_tokens: 0 } } });
   });
-  for (const [epoch, redact, bindingFile] of [['v1', false, bindings], ['v2', false, bindings],
-    ['v1', true, bindings], ['v1', false, activityBindings]] as const) {
+  const fixtures: [string, boolean, string][] = [['v1', false, bindings], ['v2', false, bindings],
+    ['v1', true, bindings], ['v1', false, activityBindings]];
+  if (archiveBindings) fixtures.push(['v1', true, archiveBindings]);
+  for (const [epoch, redact, bindingFile] of fixtures) {
     const redactions = redact ? await save(['PRIVATE_SENTINEL']) : null;
     const result = await executeAnalyze(['--provider', 'openai', '--input', evidence, '--bindings', bindingFile,
       ...local.excerpts.flatMap((excerpt) => ['--excerpt', excerpt.id]), '--model', 'fixture-model', '--model-epoch', epoch,
       '--context-window', '16000', '--output', output(), '--cache-dir', join(root, 'analysis-cache'),
       ...(redactions ? ['--redactions-file', redactions] : [])], { fetch, env: { OPENAI_API_KEY: 'FIXTURE_KEY' } });
-    if (bindingFile === activityBindings) activityFile = result.jsonPath;
+    if (bindingFile === archiveBindings) archiveFile = result.jsonPath;
+    else if (bindingFile === activityBindings) activityFile = result.jsonPath;
     else if (redact) redactedFile = result.jsonPath;
     else if (epoch === 'v1') analysisFile = result.jsonPath;
     else alternateFile = result.jsonPath;
@@ -264,6 +274,41 @@ describe('offline review persistence and export', () => {
     expect(current.state.confirmations).toHaveLength(3);
     expect(current.state.confirmations[0].status).toBe('revoked');
   });
+
+  it.runIf(Boolean(testDatabaseUrl))('archives review history and restores an offline draft from PostgreSQL, then respects an imported revocation', async () => {
+    vi.stubEnv('DATABASE_URL', testDatabaseUrl!);
+    try {
+      const storeDirectory = store();
+      await review(storeDirectory, undefined, ['--analysis', archiveFile]);
+      const approved = await review(storeDirectory, approvals, ['--analysis', archiveFile]);
+      const local = await resume(approved.jsonPath);
+      const archived = await executeDbArchive(['--review', approved.jsonPath]);
+      expect(archived).toMatchObject({ revision: 2, insertedRevisions: 2, version: approved.version, externalRequests: 0 });
+      const repeated = await executeDbArchive(['--review', approved.jsonPath]);
+      expect(repeated).toMatchObject({ insertedRevisions: 0, version: archived.version, externalRequests: 0 });
+      const options = ['--owner', archiveOwnerId, '--repository', 'repo', '--work-item', 'work',
+        '--claim', 'problem-1', '--claim', 'implementation-1', '--claim', 'user-result', '--claim', 'contribution-1'];
+
+      const moved = `${archiveFile}.hidden`;
+      await rename(archiveFile, moved);
+      try {
+        const restored = await executeResumeDb([...options, '--output', output()]);
+        expect(restored).toMatchObject({ version: local.version, externalRequests: 0 });
+        expect(await readFile(restored.markdownPath, 'utf8')).toBe(await readFile(local.markdownPath, 'utf8'));
+        const report = await json(restored.jsonPath);
+        expect(report.trace[0].evidence[0].text).toContain('[REDACTED]');
+        expect(JSON.stringify(report)).not.toContain('PRIVATE_SENTINEL');
+      } finally { await rename(moved, archiveFile); }
+
+      await expect(executeResumeDb([...options, '--owner', `${archiveOwnerId}-other`, '--output', output()])).rejects.toThrow('not found');
+      const report = await json(approved.jsonPath);
+      const confirmation = report.state.confirmations.find((item: { claimId: string }) => item.claimId === 'contribution-1');
+      const revoked = await review(storeDirectory, [{ kind: 'revoke', confirmationId: confirmation.id }], ['--analysis', archiveFile]);
+      expect(await executeDbArchive(['--review', revoked.jsonPath])).toMatchObject({ revision: 3, insertedRevisions: 1 });
+      await expect(executeDbArchive(['--review', approved.jsonPath])).rejects.toThrow('stale');
+      await expect(executeResumeDb([...options, '--output', output()])).rejects.toThrow('unconfirmed');
+    } finally { vi.unstubAllEnvs(); }
+  }, 30_000);
 
   it('revokes an old confirmation on edits and preserves edited drafts across changed analysis inputs', async () => {
     const storeDirectory = store();

@@ -116,3 +116,14 @@ pnpm cli resume-period --input ".data\selections.json" --period 1m --end "2026-1
 기본 기간은 `1w`이며 `1m`, `3m`, `6m`도 지원한다. `--end`를 생략하면 실행 시각을 사용한다. 기간은 `Asia/Seoul` 달력으로 계산한 `[start, end)`이고 출력 JSON에 UTC 절대 시각을 저장한다. 기간 안에 사용자 확인 완료일이 있으면 완료 성과로, 그 외에는 기간 안에 Git 커밋이 있는 작업을 기간 내 활동으로 분류한다. 활동의 날짜는 최신 커미터 시각을 사용한다. 기간 밖의 작업 ID도 JSON에 남긴다.
 
 같은 작업과 주장 선택을 반복하면 하나만 남기고, 같은 작업의 검토 버전이나 주장 선택이 다르면 입력을 거부한다. 최대 50개 선택을 받는다. 분류에 맞는 `resume` 승인 조건을 적용하고 출력 전에 모든 선택의 최신 검토 버전을 확인한다. 기간을 바꿔도 기존 분석을 재사용하며 `resume-period.json`과 `resume-period.md`를 외부 요청 없이 작성한다.
+
+## 6. PostgreSQL에 저장하고 문장 다시 출력
+
+`DATABASE_URL`을 설정하고 `pnpm db:migrate`를 실행한다. 로컬 검토를 마친 뒤 최신 `review.json`을 넘긴다. 첫 명령이 출력하는 소유자·저장소·작업 ID와 검토한 주장 ID를 조회에 사용한다.
+
+```powershell
+pnpm cli db-archive --review ".data\law-review-approved\review.json"
+pnpm cli resume-db --owner "owner" --repository "law" --work-item "search-id-encoding" --claim "implementation-1" --claim "contribution-1" --kind activity --output ".data\law-resume-db"
+```
+
+`db-archive`는 검토 버전 전체와 당시 분석·원본 커밋 연결을 함께 저장한다. 이미 저장한 버전은 재사용한다. 분석용으로 선택해 마스킹한 발췌를 보존하며, 원본 기록에는 커밋 식별자와 날짜를 저장한다. `resume-db`는 DB의 최신 검토 버전에서 문장을 만들며 로컬 분석 파일을 읽거나 모델을 호출하지 않는다. 로컬에서 편집하거나 확인·철회하면 새 검토 보고서를 다시 가져와 DB 조회에 반영한다.

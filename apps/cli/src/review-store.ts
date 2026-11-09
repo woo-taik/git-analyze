@@ -41,17 +41,22 @@ export async function loadStoredReview(directory: string, scope: ReviewScope) {
   }
   const head = object(await readBoundedJson(headFile, 4096));
   if (!version(head.version) || !Number.isSafeInteger(head.revision) || (head.revision as number) < 1) throw new Error('Invalid review head');
-  const value = object(await readBoundedJson(join(directory, `${head.version}.json`), 32 * 1024 * 1024));
-  if (hash(value) !== head.version || value.schemaVersion !== 1 || value.revision !== head.revision
+  return loadReviewVersion(directory, scope, head.version, head.revision as number);
+}
+
+export async function loadReviewVersion(directory: string, scope: ReviewScope, versionId: string, revision: number) {
+  if (!version(versionId) || !Number.isSafeInteger(revision) || revision < 1) throw new Error('Invalid review version identity');
+  const value = object(await readBoundedJson(join(directory, `${versionId}.json`), 32 * 1024 * 1024));
+  if (hash(value) !== versionId || value.schemaVersion !== 1 || value.revision !== revision
     || (value.revision === 1 ? value.previousVersion !== null : !version(value.previousVersion))
     || typeof value.analysisFile !== 'string' || !version(value.analysisVersion)) throw new Error('Invalid review version');
   const saved = await loadSavedAnalysis(value.analysisFile);
   if (saved.analysisVersion !== value.analysisVersion || hash(reviewScope(saved.packet)) !== hash(scope)) throw new Error('Review baseline has changed');
   const context = { ...saved.baseline, analysisVersion: saved.analysisVersion };
   const state = validateReviewState(value.state, context);
-  const stored: StoredReview = { schemaVersion: 1, revision: head.revision as number, previousVersion: value.previousVersion as string | null,
+  const stored: StoredReview = { schemaVersion: 1, revision, previousVersion: value.previousVersion as string | null,
     analysisFile: saved.analysisFile, analysisVersion: saved.analysisVersion, state };
-  return { version: head.version, stored, saved, context };
+  return { version: versionId, stored, saved, context };
 }
 
 export async function persistReview(directory: string, previous: Awaited<ReturnType<typeof loadStoredReview>>,

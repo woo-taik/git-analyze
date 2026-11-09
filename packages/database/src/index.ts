@@ -3,6 +3,8 @@ import pg from 'pg';
 import * as schema from './schema.js';
 
 export * from './schema.js';
+export { archiveWork, withArchivedReview } from './work-archive.js';
+export type { ArchiveScope, ArchivedAnalysis, ArchivedReview, WorkArchiveRevision } from './work-archive.js';
 
 // Pool is lazy: importing this module does not connect or run migrations.
 export function createDatabase(connectionString: string) {
