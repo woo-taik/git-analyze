@@ -34,7 +34,8 @@ apps/
     review-store.ts              범위별 lock·불변 검토 버전·HEAD 교체
     resume.ts                    최신 검토 상태 기반 문장 출력·절별 근거 추적
     analysis-input.ts            크기 제한 UTF-8 JSON·원본 연결 파일 입력
-    analysis-cache.ts            분석 키·저장 결과 재검증·원자적 캐시 파일 저장
+    analysis-cache.ts            공급자별 분석 키·저장 결과 재검증·원자적 캐시 파일 저장
+    analysis-runtime.ts          Claude 기본 요청 조립·생성 본문·공급자 버전 선택
     analysis-report.ts           새 출력 폴더·분석/실패/미리보기 보고서
   worker/src/
     index.ts                     Nest standalone 진입점
@@ -64,7 +65,9 @@ packages/
     git/local-history.ts         로컬 커밋·변경 파일 수집
     git/command.ts               shell 없는 Git 실행·출력 크기/시간 제한
     git/local-evidence.ts        객체 검증·첫 부모 raw diff·제한된 patch 읽기
-    llm/openai-analysis.ts       OpenAI 토큰 계산·분석·상태/사용량·검증 연결
+    llm/claude-analysis.ts       Claude 토큰 계산·구조화 분석·종료/사용량·검증
+    llm/analysis-prompt.ts        공급자 공통 생성 스키마·고정 지시문
+    llm/openai-analysis.ts       이전 Claude 어댑터·보고서 호환
     llm/openai-schema.ts         생성용 스키마 변환·고정 분석 지시문
     llm/transmission.ts          발췌 선택·민감 경로·마스킹·전송 버전
     index.ts                     공개 export
@@ -79,7 +82,8 @@ tests/prepare.test.ts            기여 구분·선별·묶기·오프라인 CLI
 tests/evidence.test.ts           patch·제한·누락·캐시·실제 CLI 통합 검증
 tests/analysis-evidence.test.ts  분석 입력의 출처·범위·해시·발췌 참조 검증
 tests/analysis-validation.test.ts 분석 출력 형식·출처·확인 기록·응답 크기 검사
-tests/openai-analysis.test.ts    SDK 모형 fetch·전송 경계·예산·상태·사용량 검사
+tests/openai-analysis.test.ts    이전 OpenAI SDK 모형·보고서 호환 검사
+tests/claude-analysis.test.ts    Claude SDK 모형·전체 요청·사용량·기본 CLI·캐시 검사
 tests/analyze.test.ts            CLI 입력·미리보기·저장·캐시·실패·동시 호출 검사
 tests/review-resume.test.ts      확인/철회·편집 보존·최신 버전·문장 근거·오프라인 CLI
 docs/                            요구사항·설계·구현 계획
@@ -119,7 +123,7 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 - `collect`: 로컬 레포와 기간을 검증하고 이력을 수집해 JSON·Markdown 파일을 생성한다. DB와 LLM을 사용하지 않는다.
 - `prepare`: 저장한 `history.json`과 작성자 이메일/별칭으로 후보·검토·제외를 선별하고 JSON·Markdown을 생성한다. Git·DB·LLM에 연결하지 않는다.
 - `evidence`: 저장한 후보에서 그룹 하나 또는 명시한 커밋들을 선택하고, 로컬 객체 검증 후 크기를 제한한 patch 근거와 추출 캐시를 생성한다. DB·LLM을 사용하지 않는다.
-- `analyze`: 저장한 근거와 명시적 원본 연결·발췌 선택을 검증하고 OpenAI 분석 초안을 JSON·Markdown으로 저장한다. `--dry-run`은 키 없이 오프라인 미리보기를 생성하며 동일 요청은 외부 호출 없이 로컬 캐시를 재사용한다.
+- `analyze`: 저장한 근거와 명시적 원본 연결·발췌 선택을 검증하고 Claude 분석 초안을 JSON·Markdown으로 저장한다. `--dry-run`은 키 없이 오프라인 미리보기를 생성하며 동일 요청은 외부 호출 없이 로컬 캐시를 재사용한다.
 - `review`: 저장된 분석과 원본 근거를 재검증하고 사용자 보충·편집·확인/철회·완료 판단을 별도 로컬 버전으로 저장한다. 외부 호출은 없다.
 - `resume`: 최신 검토 버전을 검사하고 선택한 사실 문구를 한 문장으로 조합한다. 완료 성과와 활동 초안을 구분하고 절별 Git 원본/사용자 확인 기록을 보존한다. 외부 호출은 없다.
 
@@ -131,7 +135,7 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. �
 
 캐시 재사용 전에도 원본 메타데이터·ref 기준 도달 가능성·파일 목록·blob 존재를 확인한다. 추출 키와 패킷 내용 hash는 별도다. 실행/관측 시각·출력 경로·기간은 패킷 내용에 넣지 않고 보고서의 출처 정보로 둔다. 서로 다른 clone은 별도 범위이며 로컬 범위 식별은 HTTP 인증·인가를 대신하지 않는다.
 
-분석 흐름은 `executeAnalyze → loadAnalysisInput/validateLocalEvidencePacket → toEvidencePacket → prepareOpenAiAnalysisRequest → 미리보기 또는 검증된 분석 캐시/어댑터 → 보고서`다. 소유자·저장소·작업과 원본 ID·버전을 `--bindings` 파일로 명시한다. 발췌는 반복 `--excerpt`로 선택하고 마스킹은 JSON 파일로 입력한다. 실제 분석 전 출력 폴더를 확보하고, 캐시 miss의 동시 중복 호출은 키별 lock으로 차단한다. 실패를 성공 캐시에 저장하지 않으며 손상 캐시는 자동 재호출하지 않는다. 자세한 명령·입력·실패/캐시 계약은 [분석 CLI 사용법](analysis-cli.md)을 따른다.
+분석 흐름은 `executeAnalyze → loadAnalysisInput/validateLocalEvidencePacket → toEvidencePacket → prepareAnalysisRequest(기본 Claude) → 미리보기 또는 검증된 분석 캐시/어댑터 → 보고서`다. 소유자·저장소·작업과 원본 ID·버전을 `--bindings` 파일로 명시한다. 발췌는 반복 `--excerpt`로 선택하고 마스킹은 JSON 파일로 입력한다. 실제 분석 전 출력 폴더를 확보하고, 캐시 miss의 동시 중복 호출은 키별 lock으로 차단한다. 실패를 성공 캐시에 저장하지 않으며 손상 캐시는 자동 재호출하지 않는다. 자세한 명령·입력·실패/캐시 계약은 [분석 CLI 사용법](analysis-cli.md)을 따른다.
 
 검토 흐름은 `executeReview → loadSavedAnalysis → 범위별 lock → 현재 검토 버전 로드 → 사용자 행동/명시적 rebase → 불변 버전/HEAD 저장 → 보고서`다. 문장은 `executeResume → 같은 lock → 최신 버전/원본/확인 재검증 → composeResumeBullet → 절별 trace와 보고서`로 출력한다. 변경된 검토 보고서의 이전 스냅샷으로 새 문장을 출력할 수 없다. 원시 모델 분석 캐시와 사용자 검토를 분리해 재분석이 사용자 수정을 덮어쓰지 않게 한다. [검토·문장 CLI 사용법](review-resume-cli.md)을 따른다.
 
@@ -182,17 +186,17 @@ const input = await toEvidencePacket({
 
 발췌의 `id`, 텍스트, locator, 커밋/부모 OID, 경로와 `complete`를 보존하고 `reference`에 원본 레코드 ID·버전을 연결한다. `provenance.local`에는 추출 정책·명시적 묶기·선별/기여 정보·파일 manifest·blob OID·생략 사유·요약을 보존한다. 실행 시각·로컬 절대 경로·캐시 hit 등 보고서 실행 메타데이터는 포함하지 않는다. 입력 객체는 복사하므로 변환 중·후 원본의 변경이 반환값을 수정하지 않는다.
 
-현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 변환기 자체는 전체 JSON 파서가 아니며 `analyze`의 크기 제한 UTF-8 JSON 입력과 core의 `validateLocalEvidencePacket`을 먼저 적용한다. 구조 검사는 타입·열거값·상한·시간·경로·발췌 ID/locator·바이트/파일 집계를 확인한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. CLI는 변환 결과를 OpenAI 어댑터에 연결하며 DB 조립은 후속이다.
+현재 변환기는 지원 추출 버전, 내용 hash, 선택/원본/발췌 연결의 일관성을 검사한다. 변환기 자체는 전체 JSON 파서가 아니며 `analyze`의 크기 제한 UTF-8 JSON 입력과 core의 `validateLocalEvidencePacket`을 먼저 적용한다. 구조 검사는 타입·열거값·상한·시간·경로·발췌 ID/locator·바이트/파일 집계를 확인한다. 추출 완전성을 분석 근거의 의미적 충분성으로 해석하지 않으며 후보 상태·기여 분류를 승인하거나 완료일을 부여하지 않는다. CLI는 변환 결과를 Claude 어댑터에 연결하며 DB 조립은 후속이다.
 
 분석 출력의 스키마 버전은 `ANALYSIS_SCHEMA_VERSION`(`work-item-analysis-v1`)이다. `WORK_ITEM_ANALYSIS_SCHEMA`는 기존 `WorkItemAnalysis`의 camelCase 필드를 따르는 draft-07 JSON Schema다. 각 문제·제약·대안·결정·구현·결과·검증·기여 배열은 `{ id, text, status, evidence }` 주장으로 구성하며 `user_confirmed`에만 `confirmationId`가 필요하다. 최상위와 내부 객체의 알 수 없는 필드, 빈 문자열·공백뿐인 문구, 잘못된 상태·타입을 거부한다. 섹션당 최대 32개 주장, 주장당 최대 20개 인용, 최대 20개 질문, 식별자 최대 512자와 문구·locator 최대 4,096자를 적용한다. 이 제한은 토큰 예산과 별도다. Ajv 설정은 형 변환·필드 삭제·기본값 삽입을 허용하지 않는다. 스키마 버전과 TypeScript 검증 연동은 [Ajv 공식 문서](https://ajv.js.org/guide/typescript.html)를 참고한다.
 
-`LlmAnalysisProvider.analyze`의 공통 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 검증기 자체는 전송 상태를 알 수 없다. 구체적인 OpenAI 어댑터는 네트워크 응답·거부·종료 상태를 검사한 뒤 이 검증기를 실행하며, 성공 결과의 구체 타입은 `WorkItemAnalysis`다.
+`LlmAnalysisProvider.analyze`의 공통 응답 값은 `unknown`이다. 호출자는 디코딩된 JSON을 `validateWorkItemAnalysis(value, { packet, confirmations })`에 전달하거나, JSON 문자열을 `parseWorkItemAnalysis(json, context)`로 파싱·검증한 뒤 반환된 `WorkItemAnalysis`를 사용한다. 문자열 파서는 UTF-8 기준 1 MiB를 넘는 응답, 잘린 JSON·코드 펜스·뒤에 붙은 설명을 거부한다. 검증기 자체는 전송 상태를 알 수 없다. 구체적인 Claude 어댑터는 네트워크 응답·거부·종료 상태를 검사한 뒤 이 검증기를 실행하며, 성공 결과의 구체 타입은 `WorkItemAnalysis`다.
 
 런타임 검증은 `workItemId`와 `inputVersion`의 일치, 전체 섹션에서 주장 ID의 유일성, 모든 인용의 원본 ID·버전·locator가 실제 입력 발췌와 정확하게 일치하는지를 확인한다. 빈 발췌는 인용할 수 없으며 `source_supported`는 적어도 하나의 인용이 필요하다. `inferred`·`missing`은 근거 없이 남길 수 있다. 추출 패킷이 불완전해도 제한된 분석은 허용하며 원본의 `complete` 값을 변경하지 않는다. 인용의 존재가 의미적 사실성·테스트 성공·개인 기여를 자동 증명하지 않는다. core의 검토·문장 정책은 별도 사용자 확인과 출력 자격을 검사한다.
 
 `ClaimConfirmation`은 모델 응답 밖에서 호출자가 제공하는 신뢰된 확인 기록이다. `id`, 소유자·저장소·작업, 분석 입력 버전, 주장 ID·문구, `confirmed`/`revoked` 상태를 담는다. `user_confirmed`는 같은 ID의 확인 기록이 정확히 하나 존재하고 모든 연결·문구가 일치하며 `confirmed`일 때만 허용한다. 다른 입력 버전·다른 주장에 대한 확인, 철회·중복 기록은 거부한다. `review`는 명시적 사용자 행동으로 확인 ID와 actor·시각을 기록하고 로컬 버전으로 보존한다. 편집·철회·rebase는 과거 기록을 보존하며 후속 문장을 무효화한다. 다중 사용자 인증·권한·DB 존재 검사는 후속이다.
 
-실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. OpenAI 어댑터와 CLI 캐시 hit 모두 분석 출력 검증을 호출한다.
+실패 시 `AnalysisValidationError`의 `code`와 `path`로 형식 오류·작업/버전 불일치·중복 주장·없는 근거·유효하지 않은 확인을 구분한다. 오류 문구에 응답 본문이나 원본 내용을 넣지 않는다. 성공 시 검증된 복사본을 반환하며 입력을 수정하지 않는다. Claude 어댑터와 CLI 캐시 hit 모두 분석 출력 검증을 호출한다.
 
 ### config
 
@@ -214,7 +218,7 @@ GitHub·SourceCommit·일반 Git 원격·로컬 저장소의 카탈로그와 로
 
 현재는 전체 `RepositoryReader` 어댑터가 아닌 로컬 기간 수집·patch 추출 함수다. 원격 Git 수집과 `github/`, `sourcecommit/` API 보강 모듈은 후속 작업이다.
 
-`OpenAiAnalysisProvider`는 별도의 `LlmAnalysisProvider` 구현이다. OpenAI SDK는 providers 안에만 둔다. 키·모델·context window는 호출 시 설정하며 import와 생성자만으로 요청하지 않는다. 명시적 발췌 선택·민감 경로 제외·마스킹 후 지시문·스키마를 포함한 입력 토큰을 공급자 API로 계산하고 예산 내 분석 1회와 검증을 연결한다. 미완료·실패·거부·네트워크 오류를 성공 처리하지 않고 사용량을 기록한다. 실제 외부 API 호출을 수행하는 기능이므로 전송 정책과 [호출 계약](llm-analysis.md)을 따른다. `prepareOpenAiAnalysisRequest`를 CLI 미리보기와 실제 요청에서 공유한다. CLI·로컬 분석 결과 캐시를 연결했으며 DB 연결은 후속이다.
+`ClaudeAnalysisProvider`는 별도의 `LlmAnalysisProvider` 구현이다. Anthropic SDK는 providers 안에만 둔다. 이전 OpenAI API·모형 테스트·보고서 복원은 호환을 유지한다. CLI 기본은 Claude이고 키는 ANTHROPIC_API_KEY다. 키·모델·context window는 호출 시 설정하며 import와 생성자만으로 요청하지 않는다. 명시적 발췌 선택·민감 경로 제외·마스킹 후 지시문·스키마를 포함한 입력 토큰을 공급자 API로 계산하고 예산 내 분석 1회와 검증을 연결한다. 미완료·실패·거부·네트워크 오류를 성공 처리하지 않고 사용량을 기록한다. 실제 외부 API 호출을 수행하는 기능이므로 전송 정책과 [호출 계약](llm-analysis.md)을 따른다. `prepareClaudeAnalysisRequest`를 CLI 미리보기와 실제 요청에서 공유한다. CLI·로컬 분석 결과 캐시를 연결했으며 DB 연결은 후속이다.
 
 ### database
 
@@ -326,7 +330,7 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 편집 초안 보존, 최신 검토 버전 기반 한 작업의 성과/활동 문장과 절별 근거 추적.
 
-미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·DB 분석/검토 저장·기간별 다중 작업 선택과 문장 조합·인증과 소유권 검사·검토 UI. 실계정·모델 품질은 아직 검증하지 않았다. 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
+미구현: 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·DB 분석/검토 저장·기간별 다중 작업 선택과 문장 조합·인증과 소유권 검사·검토 UI. 2026-10-29에 실제 Claude로 law 표본 3건을 검증했고 더 넓은 품질 평가는 후속이다. 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
 
 ## 10. 관련 문서
 

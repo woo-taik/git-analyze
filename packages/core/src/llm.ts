@@ -5,6 +5,7 @@ export interface LlmUsage {
   readonly model: string;
   readonly inputTokens: number;
   readonly cachedInputTokens: number;
+  readonly cacheCreationInputTokens?: number;
   readonly outputTokens: number;
   readonly reasoningTokens: number | null;
   readonly requestId: string | null;

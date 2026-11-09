@@ -37,7 +37,7 @@
 
 ### A. 작업별 분석
 
-변경되었으며 선별을 통과한 건에만 호출한다. 현재 `WORK_ITEM_ANALYSIS_SCHEMA`와 런타임 검증기가 정의하는 결과 필드는 다음과 같다. `OpenAiAnalysisProvider`는 검토한 발췌만 분석하고 이 출력 검증을 호출한다. 분석 CLI·로컬 저장·결과 캐시를 연결했으며 [CLI 사용법](analysis-cli.md)을 따른다.
+변경되었으며 선별을 통과한 건에만 호출한다. 현재 `WORK_ITEM_ANALYSIS_SCHEMA`와 런타임 검증기가 정의하는 결과 필드는 다음과 같다. `ClaudeAnalysisProvider`는 검토한 발췌만 분석하고 이 출력 검증을 호출한다. 분석 CLI·로컬 저장·결과 캐시를 연결했으며 [CLI 사용법](analysis-cli.md)을 따른다.
 
 - `problem`, `constraints`, `alternatives`, `decision`, `implementation`.
 - `results`, `verification`, `contribution`.
@@ -47,7 +47,7 @@
 
 없는 대안·수치·결과는 빈 배열 또는 `missing` 주장으로 표현한다. 배열을 null로 대체하지 않는다. 근거 완전성은 신뢰된 입력 패킷의 `complete`와 provenance에서 보존하며 모델이 출력하지 않는다. 동일 응답에서 질문도 생성해 별도 질문 생성 호출을 줄인다.
 
-`parseWorkItemAnalysis`는 UTF-8 기준 1 MiB 상한으로 JSON을 파싱하고 스키마·작업/입력 버전·주장 ID·인용 연결·사용자 확인을 검증한다. 디코딩된 JSON에는 `validateWorkItemAnalysis`를 사용한다. 출력 형식과 출처 연결의 일치 여부를 검사하며 주장의 의미적 타당성이나 수치의 정확성을 자동 보증하지 않는다. 사용자 확인 기록·권한은 호출 계층에서 검증해 제공해야 한다. OpenAI 어댑터는 응답 종료·실패·거부·타임아웃과 전체 요청 토큰 예산을 검사한 뒤 이 검증기를 호출한다. 토큰 계산 요청도 외부 전송이며 선택·제외·마스킹을 먼저 적용한다. [호출 계약](llm-analysis.md)을 따른다.
+`parseWorkItemAnalysis`는 UTF-8 기준 1 MiB 상한으로 JSON을 파싱하고 스키마·작업/입력 버전·주장 ID·인용 연결·사용자 확인을 검증한다. 디코딩된 JSON에는 `validateWorkItemAnalysis`를 사용한다. 출력 형식과 출처 연결의 일치 여부를 검사하며 주장의 의미적 타당성이나 수치의 정확성을 자동 보증하지 않는다. 사용자 확인 기록·권한은 호출 계층에서 검증해 제공해야 한다. Claude 어댑터는 응답 종료·실패·거부·타임아웃과 전체 요청 토큰 예산을 검사한 뒤 이 검증기를 호출한다. 토큰 계산 요청도 외부 전송이며 선택·제외·마스킹을 먼저 적용한다. [호출 계약](llm-analysis.md)을 따른다.
 
 ### B. 기간별 문장 생성
 
@@ -133,7 +133,7 @@ SHA256(canonical_json({
 
 공급자 캐시는 새 응답을 생성하므로 출력 비용과 호출은 남는다. 앱 결과 캐시와 구분한다. 토큰 절약량과 할인에 의한 비용 절약량도 따로 측정한다. 캐시를 맞추기 위한 불필요한 원문 추가는 기본 정책으로 사용하지 않는다.
 
-근거: [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching). 구체적인 지원 조건은 모델 선택 시 재확인한다.
+근거: [Claude Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching). 구체적인 지원 조건은 모델 선택 시 재확인한다. 현재 어댑터는 명시적 prompt-cache 최적화를 추가하지 않는다.
 
 ## 6. 모델 선택
 
@@ -145,7 +145,7 @@ SHA256(canonical_json({
 4. 고성능 후보와 비교해 승인된 성과 문장당 비용과 처리 시간을 측정한다.
 5. 기준을 통과한 최소비용 모델을 선택하고 실제 모델 버전·설정을 기록한다.
 
-JSON Schema 준수는 사실 정확성의 보장이 아니다. [OpenAI 구조화 출력 문서](https://developers.openai.com/api/docs/guides/structured-outputs)도 내용상 오류 가능성을 명시한다.
+JSON Schema 준수는 사실 정확성의 보장이 아니다. [Claude 구조화 출력 문서](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)도 내용상 오류 가능성을 명시한다.
 
 대량의 최초 과거 이력 분석은 즉시 결과가 필요하지 않다면 공급자 batch 처리를 나중에 검토한다. 초기에는 큐 기반 일반 호출로 재시도·비용·품질을 먼저 검증한다.
 

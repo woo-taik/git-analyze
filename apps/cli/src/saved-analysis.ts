@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { canonicalJson } from '@git-analyze/core';
-import { prepareOpenAiAnalysisRequest, type AnalysisTransmissionReceipt } from '@git-analyze/providers';
+import type { AnalysisTransmissionReceipt } from '@git-analyze/providers';
+import { prepareAnalysisRequest } from './analysis-runtime.js';
 import { analysisCacheKey, hash, validateAnalysisResult, type AnalysisSettings } from './analysis-cache.js';
 import { identity, object, parseAnalysisInput, readBoundedJson } from './analysis-input.js';
 
@@ -27,7 +28,9 @@ export async function loadSavedAnalysis(path: string) {
   const loaded = await parseAnalysisInput(await readBoundedJson(source.inputFile, 32 * 1024 * 1024), report.bindings, source.inputFile);
   if (canonicalJson(source) !== canonicalJson(loaded.source)) throw new Error('Saved analysis source does not match original evidence');
   const rawSettings = object(report.settings);
+  if (rawSettings.provider !== undefined && !['claude', 'openai'].includes(String(rawSettings.provider))) throw new Error('Invalid saved provider');
   const settings: AnalysisSettings = { model: identity(rawSettings.model), modelEpoch: identity(rawSettings.modelEpoch),
+    ...(rawSettings.provider === undefined ? {} : { provider: rawSettings.provider as 'claude' | 'openai' }),
     contextWindowTokens: positive(rawSettings.contextWindowTokens), maxInputTokens: positive(rawSettings.maxInputTokens),
     maxOutputTokens: positive(rawSettings.maxOutputTokens), timeoutMs: positive(rawSettings.timeoutMs) };
   if (settings.timeoutMs > 60_000) throw new Error('Invalid saved analysis timeout');
@@ -53,7 +56,7 @@ export async function loadSavedAnalysis(path: string) {
   }
   if ([...redacted].some((id) => !selected.has(id))) throw new Error('Unknown saved redaction');
   // The same pure request builder verifies sensitive-path exclusions, contribution mapping and transmission hashes.
-  const prepared = prepareOpenAiAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings.model,
+  const prepared = prepareAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings,
     { allowedExcerptIds: [...selected] });
   const omittedSelections = object(object(report.result).request).transmission;
   if (canonicalJson(omittedSelections) !== canonicalJson(receipt)) throw new Error('Inconsistent saved transmission receipts');
@@ -61,7 +64,7 @@ export async function loadSavedAnalysis(path: string) {
   const omitted = receipt.omitted;
   if (!Array.isArray(omitted) || omitted.length !== prepared.receipt.omitted.length) throw new Error('Invalid saved omissions');
   const sensitiveIds = omitted.filter((value) => ['sensitive_path', 'empty'].includes(String(object(value).reason))).map((value) => object(value).id);
-  const withSensitive = prepareOpenAiAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings.model,
+  const withSensitive = prepareAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings,
     { allowedExcerptIds: [...selected, ...sensitiveIds.map(identity)] });
   const restoredReceipt = { ...withSensitive.receipt, redactedExcerptIds: [...redacted] };
   if (canonicalJson(restoredReceipt) !== canonicalJson(receipt) || withSensitive.input !== canonicalJson(sent)) {

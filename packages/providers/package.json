@@ -14,6 +14,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.3.0",
     "@git-analyze/core": "workspace:*",
     "openai": "7.43.0"
   }

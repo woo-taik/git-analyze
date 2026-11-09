@@ -16,7 +16,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 - [제품 요구사항](docs/product-requirements.md): 분석 단위, 성과의 근거, 기간 규칙, MVP 범위.
 - [기술 스택 및 아키텍처](docs/architecture.md): 권장 구성, 대안 비교, 수집·저장·작업 처리 설계.
 - [LLM 비용 및 토큰 설계](docs/llm-efficiency.md): 재사용, 입력 예산, 캐시, 품질 평가와 비용 측정.
-- [LLM 분석 어댑터](docs/llm-analysis.md): OpenAI 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
+- [LLM 분석 어댑터](docs/llm-analysis.md): Claude 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
 - [분석 CLI 사용법](docs/analysis-cli.md): 원본 연결 파일, 전송 미리보기, 분석 저장과 호출 없는 캐시 재사용.
 - [사용자 검토와 성과 문장](docs/review-resume-cli.md): 보충·편집·확인/철회, 재분석 시 편집 보존과 근거를 추적하는 문장 출력.
 - [구현 순서](docs/implementation-plan.md): 단계별 산출물과 완료 조건.
@@ -28,7 +28,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 OpenAI 구조화 분석을 CLI에서 실행할 수 있다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·편집·확인/철회와 한 건의 성과 문장 출력도 로컬 CLI로 연결했다. 원격 fetch·clone, Octokit 보강, 기간별 다중 작업 조합과 React + Vite 검토 UI는 후속이다.
+로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 Claude 구조화 분석을 CLI에서 실행할 수 있다. 실제 LLM 공급자는 Claude를 사용하고 키는 `ANTHROPIC_API_KEY`로 설정한다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·편집·확인/철회와 한 건의 성과 문장 출력도 로컬 CLI로 연결했다. 원격 fetch·clone, Octokit 보강, 기간별 다중 작업 조합과 React + Vite 검토 UI는 후속이다.
 
 ## 시작
 
@@ -114,7 +114,7 @@ pnpm cli evidence --input ".data\my-candidates\candidates.json" --commit <첫 OI
 pnpm cli analyze --input ".data\law-evidence\evidence.json" --bindings ".data\law-bindings.json" --excerpt "<검토한 발췌 ID>" --model "<모델 또는 리비전>" --model-epoch "2026-10-28-v1" --context-window <모델 context 토큰 수> --dry-run --output ".data\law-preview"
 ```
 
-`--dry-run`은 키·외부 호출 없이 전송 미리보기를 저장한다. 실제 분석은 `OPENAI_API_KEY`를 설정하고 `--dry-run`을 제거해 새 출력 폴더로 실행한다. 토큰 계산도 외부 전송이다. 동일 요청은 키 없이도 외부 호출 0회로 재사용한다. 입력 형식·마스킹·예산·실패·캐시 계약은 [분석 CLI 사용법](docs/analysis-cli.md)을 따른다.
+`--dry-run`은 키·외부 호출 없이 전송 미리보기를 저장한다. 실제 분석은 `ANTHROPIC_API_KEY`를 설정하고 Claude 모델을 명시한 뒤 `--dry-run`을 제거해 새 출력 폴더로 실행한다. 토큰 계산도 외부 전송이다. 동일 요청은 키 없이도 외부 호출 0회로 재사용한다. 입력 형식·마스킹·예산·실패·캐시 계약은 [분석 CLI 사용법](docs/analysis-cli.md)을 따른다.
 
 ## 사용자 확인 후 성과 문장 출력
 
@@ -148,6 +148,6 @@ DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db
 
 분석 출력은 core의 `WORK_ITEM_ANALYSIS_SCHEMA`와 `validateWorkItemAnalysis`·`parseWorkItemAnalysis`로 검증한다. 잘못된 형식·입력 버전·중복 주장 ID·존재하지 않는 인용을 거부하며, `user_confirmed`는 별도 사용자 확인 기록과 범위·입력 버전·주장 문구까지 일치해야 한다. `review`가 로컬 사용자 행동에서 확인 기록을 생성하고 저장한다. 인용과 확인의 존재 검사는 의미적 사실성 판단을 대신하지 않는다.
 
-`OpenAiAnalysisProvider`는 명시한 키·모델·context window로 선택된 발췌를 분석한다. 민감 경로 제외·문자열 마스킹 후 지시문·출력 스키마까지 포함한 전체 입력을 계산하고, 예산 내에서 분석 1회와 출력 검증을 수행한다. 계산 요청도 외부 전송이므로 검토한 발췌 ID를 명시해야 한다. SDK 모형 테스트를 통과했으며 실제 모델 접속·품질·청구는 아직 검증하지 않았다. [호출 계약과 제한](docs/llm-analysis.md)을 따른다.
+`ClaudeAnalysisProvider`는 명시한 키·모델·context window로 선택된 발췌를 분석한다. 민감 경로 제외·문자열 마스킹 후 지시문·출력 스키마까지 포함한 입력을 계산하고, 예산 내에서 분석 1회와 출력 검증을 수행한다. 계산 요청도 외부 전송이므로 검토한 발췌 ID를 명시해야 한다. 2026-10-29에 실제 `claude-sonnet-5-5`로 로컬 law 근거 3건의 구조화 응답·인용·사용량·검토 저장과 캐시 재사용을 확인했다. 문장 의미의 정확성과 개인 기여·완료 확인은 별도 검토가 필요하다. 과거 OpenAI 보고서 읽기 호환과 모형 테스트는 유지하며 다른 공급자로 자동 전환하지 않는다. [호출 계약과 제한](docs/llm-analysis.md)을 따른다.
 
 작성 기준일: 2026-10-29, Asia/Seoul.

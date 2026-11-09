@@ -87,7 +87,7 @@ beforeAll(async () => {
   });
   for (const [epoch, redact] of [['v1', false], ['v2', false], ['v1', true]] as const) {
     const redactions = redact ? await save(['PRIVATE_SENTINEL']) : null;
-    const result = await executeAnalyze(['--input', evidence, '--bindings', bindings,
+    const result = await executeAnalyze(['--provider', 'openai', '--input', evidence, '--bindings', bindings,
       ...local.excerpts.flatMap((excerpt) => ['--excerpt', excerpt.id]), '--model', 'fixture-model', '--model-epoch', epoch,
       '--context-window', '16000', '--output', output(), '--cache-dir', join(root, 'analysis-cache'),
       ...(redactions ? ['--redactions-file', redactions] : [])], { fetch, env: { OPENAI_API_KEY: 'FIXTURE_KEY' } });

@@ -31,13 +31,13 @@ export class CommandService {
           '  pnpm cli evidence --input <candidates.json> (--group <id> | --commit <full-oid>...) [--title <text>] [--repo <local-path>] [--output <new-directory>]',
           '    [--max-file-bytes 16384] [--max-total-bytes 65536] [--max-files 20] [--include-low-priority] [--cache-dir <path>] [--no-cache]',
           '  pnpm cli analyze --input <evidence.json> --bindings <bindings.json> --excerpt <reviewed-id>...',
-          '    --model <model> --model-epoch <revision-or-epoch> --context-window <tokens>',
-          '    [--max-input-tokens 8000] [--max-output-tokens 1000] [--timeout-ms 30000]',
+          '    --model <claude-model> --model-epoch <revision-or-epoch> --context-window <tokens> (default provider: claude)',
+          '    [--max-input-tokens 12000] [--max-output-tokens 6000] [--timeout-ms 60000]',
           '    [--redactions-file <json-array>] [--dry-run] [--cache-dir <path>] [--no-cache] [--output <new-directory>]',
           '  pnpm cli review --analysis <analysis.json> [--changes <changes.json> --actor <local-user-label>] [--rebase] [--store-dir <path>] [--output <new-directory>]',
           '  pnpm cli resume --review <review.json> --claim <id>... [--kind achievement|activity] [--store-dir <path>] [--output <new-directory>]',
           '    review and resume are offline. Resume export checks the latest review version, confirmations and completion.',
-          '', 'Local committed history. analyze sends selected excerpts to OpenAI (including token counting); --dry-run is offline.',
+          '', 'Local committed history. analyze uses Claude and ANTHROPIC_API_KEY; token counting also sends selected excerpts. --dry-run is offline.',
         ].join('\n'));
         return;
       case 'collect': {

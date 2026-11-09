@@ -30,7 +30,7 @@ export function analysisSourceLines(source: Source): string[] {
     `- 근거 입력: ${text(source.inputFile)}`, `- 원본 내용 버전: ${source.contentVersion}`];
 }
 
-export function renderPreviewMarkdown(source: Source, prepared: ReturnType<typeof prepareOpenAiAnalysisRequest>): string {
+export function renderPreviewMarkdown(source: Source, prepared: Pick<ReturnType<typeof prepareOpenAiAnalysisRequest>, 'receipt' | 'validationPacket'>): string {
   const lines = ['# 외부 전송 미리보기', '', ...analysisSourceLines(source),
     `- 전송 입력 버전: ${prepared.receipt.inputVersion}`, `- 전송 근거 완전성: ${prepared.receipt.complete}`, '',
     '외부 요청 0회. 토큰 계산도 실행하지 않았다. 아래 본문은 제외·마스킹 적용 후의 전송 발췌다.',

@@ -1,7 +1,8 @@
 import { mkdir, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { OpenAiAnalysisError, OpenAiAnalysisProvider, prepareOpenAiAnalysisRequest } from '@git-analyze/providers';
+import { ClaudeAnalysisError, ClaudeAnalysisProvider, OpenAiAnalysisError, OpenAiAnalysisProvider } from '@git-analyze/providers';
+import { generationRequest, prepareAnalysisRequest } from './analysis-runtime.js';
 import { analysisCacheKey, loadAnalysisCache, storeAnalysisCache, validateAnalysisResult, type AnalysisSettings } from './analysis-cache.js';
 import { identity, loadAnalysisInput, readBoundedJson } from './analysis-input.js';
 import { analysisSourceLines, renderAnalysisMarkdown, renderPreviewMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
@@ -20,7 +21,7 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
   readonly env?: NodeJS.ProcessEnv;
 } = {}) {
   const { values } = parseArgs({ args: [...args], strict: true, allowPositionals: false, options: {
-    input: { type: 'string' }, bindings: { type: 'string' }, excerpt: { type: 'string', multiple: true },
+    input: { type: 'string' }, bindings: { type: 'string' }, excerpt: { type: 'string', multiple: true }, provider: { type: 'string' },
     'redactions-file': { type: 'string' }, model: { type: 'string' }, 'model-epoch': { type: 'string' },
     'context-window': { type: 'string' }, 'max-input-tokens': { type: 'string' }, 'max-output-tokens': { type: 'string' },
     'timeout-ms': { type: 'string' }, 'dry-run': { type: 'boolean' }, output: { type: 'string' },
@@ -31,9 +32,11 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
   for (const value of [values.output, values['cache-dir'], values['redactions-file']]) {
     if (value !== undefined && !value.trim()) throw new Error('Analysis file/directory options cannot be empty');
   }
-  const settings: AnalysisSettings = { model: identity(values.model), modelEpoch: identity(values['model-epoch']),
-    contextWindowTokens: positive(values['context-window']), maxInputTokens: positive(values['max-input-tokens'], 8_000),
-    maxOutputTokens: positive(values['max-output-tokens'], 1_000), timeoutMs: positive(values['timeout-ms'], 30_000, 60_000) };
+  if (values.provider !== undefined && !['claude', 'openai'].includes(values.provider)) throw new Error('Unsupported analysis provider');
+  const settings: AnalysisSettings = { provider: (values.provider ?? 'claude') as 'claude' | 'openai', model: identity(values.model), modelEpoch: identity(values['model-epoch']),
+    contextWindowTokens: positive(values['context-window']), maxInputTokens: positive(values['max-input-tokens'], values.provider === 'openai' ? 8_000 : 12_000),
+    maxOutputTokens: positive(values['max-output-tokens'], values.provider === 'openai' ? 1_000 : 6_000),
+    timeoutMs: positive(values['timeout-ms'], values.provider === 'openai' ? 30_000 : 60_000, 60_000) };
   if (settings.maxOutputTokens > settings.contextWindowTokens) throw new Error('Output reservation exceeds context window');
   const loaded = await loadAnalysisInput(values.input, values.bindings);
   const redactions: unknown = values['redactions-file'] === undefined ? []
@@ -42,13 +45,13 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
     throw new Error('Redactions file must contain a JSON array of nonempty strings');
   }
   const transmission = { allowedExcerptIds: values.excerpt, redactValues: redactions as string[] };
-  const prepared = prepareOpenAiAnalysisRequest(loaded.packet, settings.model, transmission);
+  const prepared = prepareAnalysisRequest(loaded.packet, settings, transmission);
   const key = analysisCacheKey(prepared, settings);
   const cacheDirectory = resolve(values['cache-dir'] ?? join('.cache', 'analysis'));
   if (values['dry-run']) {
     const preview = { schemaVersion: 1, status: 'preview', createdAt: new Date().toISOString(), source: loaded.source,
       bindings: loaded.bindings, settings, cacheKey: key, transmission: prepared.receipt,
-      countRequest: prepared.body, analysisRequest: { ...prepared.body, max_output_tokens: settings.maxOutputTokens, store: false, stream: false } };
+      countRequest: prepared.body, analysisRequest: generationRequest(prepared, settings) };
     const directory = await reserveAnalysisDirectory(values.output);
     const files = await saveAnalysisReports(directory, 'preview', preview, renderPreviewMarkdown(loaded.source, prepared));
     return { status: 'preview' as const, externalRequests: 0, cacheKey: key, ...files };
@@ -67,21 +70,23 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
       result = await loadAnalysisCache(cacheDirectory, key, prepared, settings);
       cacheHit = result !== null;
     }
-    const apiKey = (dependencies.env ?? process.env).OPENAI_API_KEY;
-    if (!result && (typeof apiKey !== 'string' || !apiKey.trim())) throw new Error('OPENAI_API_KEY is required on an analysis cache miss');
+    const keyName = settings.provider === 'claude' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY';
+    const apiKey = (dependencies.env ?? process.env)[keyName];
+    if (!result && (typeof apiKey !== 'string' || !apiKey.trim())) throw new Error(`${keyName} is required on an analysis cache miss`);
     // Reserve writable output before any paid request; existing results are never overwritten.
     const directory = await reserveAnalysisDirectory(values.output);
     let cacheStored = false;
     if (!result) {
       try {
-        const provider = new OpenAiAnalysisProvider({ apiKey: apiKey!, model: settings.model,
+        const Provider = settings.provider === 'claude' ? ClaudeAnalysisProvider : OpenAiAnalysisProvider;
+        const provider = new Provider({ apiKey: apiKey!, model: settings.model,
           contextWindowTokens: settings.contextWindowTokens, timeoutMs: settings.timeoutMs },
         dependencies.fetch ? { fetch: dependencies.fetch } : {});
         result = validateAnalysisResult(await provider.analyze(loaded.packet, { maxInputTokens: settings.maxInputTokens,
           maxOutputTokens: settings.maxOutputTokens, transmission }), prepared, settings);
       } catch (error) {
         const failure = { schemaVersion: 1, status: 'failed', createdAt: new Date().toISOString(), source: loaded.source,
-          settings, cacheKey: key, transmission: prepared.receipt, error: error instanceof OpenAiAnalysisError
+          settings, cacheKey: key, transmission: prepared.receipt, error: error instanceof OpenAiAnalysisError || error instanceof ClaudeAnalysisError
             ? { code: error.code, stage: error.stage, usage: error.usage, httpStatus: error.httpStatus,
               validationCode: error.validationCode, countedInputTokens: error.countedInputTokens }
             : { code: 'analysis_failed', usage: null } };

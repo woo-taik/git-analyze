@@ -44,7 +44,7 @@ function runPaths() {
   return { output: join(root, name), cache: join(root, `${name}-cache`) };
 }
 function args(paths: ReturnType<typeof runPaths>, extra: string[] = []) {
-  return ['--input', input, '--bindings', bindings, '--excerpt', `git:${oid}:message`,
+  return ['--provider', 'openai', '--input', input, '--bindings', bindings, '--excerpt', `git:${oid}:message`,
     '--excerpt', local.excerpts.find((excerpt) => excerpt.path === 'src/app.ts')!.id,
     '--model', 'fixture-model', '--model-epoch', 'fixture-epoch-1', '--context-window', '16000',
     '--output', paths.output, '--cache-dir', paths.cache, ...extra];

@@ -7,3 +7,6 @@ export { OPENAI_ANALYSIS_PROMPT_VERSION, OPENAI_ANALYSIS_WIRE_SCHEMA_VERSION } f
 export type { OpenAiAnalysisConfig, OpenAiAnalysisResult, OpenAiAnalysisErrorCode } from './llm/openai-analysis.js';
 export { TransmissionError, TRANSMISSION_POLICY_VERSION } from './llm/transmission.js';
 export type { AnalysisTransmissionReceipt } from './llm/transmission.js';
+export { ClaudeAnalysisProvider, ClaudeAnalysisError, prepareClaudeAnalysisRequest,
+  CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION } from './llm/claude-analysis.js';
+export type { ClaudeAnalysisResult } from './llm/claude-analysis.js';
