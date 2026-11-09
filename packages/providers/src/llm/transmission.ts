@@ -76,6 +76,6 @@ export function prepareAnalysisTransmission(packet: EvidencePacket, policy: LlmA
   const receipt: AnalysisTransmissionReceipt = { policyVersion: TRANSMISSION_POLICY_VERSION,
     sourceInputVersion: packet.version, inputVersion, complete, sentExcerptIds: excerpts.map((excerpt) => excerpt.id),
     redactedExcerptIds, omitted };
-  return { input: serialized, receipt,
+  return { input: serialized, payload: input, receipt,
     validationPacket: { ...packet, version: inputVersion, complete, excerpts } satisfies EvidencePacket };
 }

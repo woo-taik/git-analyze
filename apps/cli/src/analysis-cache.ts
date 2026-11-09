@@ -19,7 +19,7 @@ export interface AnalysisSettings {
 }
 type Prepared = ReturnType<typeof prepareAnalysisRequest>;
 export function analysisCacheKey(prepared: Prepared, settings: AnalysisSettings) {
-  const metadata = providerMetadata(settings);
+  const metadata = providerMetadata(prepared);
   return hash({ version: ANALYSIS_CACHE_VERSION, provider: metadata.provider, ownerId: prepared.validationPacket.ownerId,
     repositoryId: prepared.validationPacket.repositoryId, workItemId: prepared.validationPacket.workItemId,
     transmission: prepared.receipt, settings, confirmationVersion: 'none-v1',
@@ -33,7 +33,7 @@ export function validateAnalysisResult(raw: unknown, prepared: Prepared, setting
   const result = object(raw);
   const request = object(result.request);
   const usage = object(result.usage);
-  const metadata = providerMetadata(settings);
+  const metadata = providerMetadata(prepared);
   if (request.requestedModel !== settings.model || request.promptVersion !== metadata.promptVersion
     || request.analysisSchemaVersion !== ANALYSIS_SCHEMA_VERSION || request.wireSchemaVersion !== metadata.wireSchemaVersion
     || request.contextWindowTokens !== settings.contextWindowTokens || request.maxInputTokens !== settings.maxInputTokens

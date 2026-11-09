@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildLocalEvidence, toEvidencePacket, type EvidencePacket } from '../packages/core/src/index.js';
-import { ClaudeAnalysisProvider } from '../packages/providers/src/index.js';
+import { CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION, ClaudeAnalysisProvider,
+  prepareClaudeAnalysisRequest } from '../packages/providers/src/index.js';
 import { executeAnalyze } from '../apps/cli/src/analyze.js';
 import { executeReview } from '../apps/cli/src/review.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
-import { hash } from '../apps/cli/src/analysis-cache.js';
+import { analysisCacheKey, hash } from '../apps/cli/src/analysis-cache.js';
 
 const oid = 'a'.repeat(40);
 const config = { apiKey: 'CLAUDE_KEY_SENTINEL', model: 'claude-fixture', contextWindowTokens: 16000 };
@@ -29,7 +30,7 @@ function harness(modify?: (body: any) => unknown, count = 1000) {
     if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: count });
     const sent = JSON.parse(body.messages[0].content);
     const analysis = { workItemId: sent.workItemId, inputVersion: sent.inputVersion, problem: [], constraints: [], alternatives: [], decision: [],
-      implementation: [{ id: 'i1', text: '입력 검증을 추가함', status: 'source_supported', evidence: [sent.excerpts[0].reference] }],
+      implementation: [{ id: 'i1', text: '입력 검증을 추가함', status: 'source_supported', evidence: [sent.excerpts[0].citationNumber] }],
       results: [], verification: [], contribution: [], missingQuestions: ['테스트 실행 기록이 있나요?'] };
     let response: any = { id: 'msg_fixture', type: 'message', role: 'assistant', model: 'claude-fixture-revision', stop_reason: 'end_turn',
       content: [{ type: 'text', text: JSON.stringify(analysis) }], usage: { input_tokens: 1000, cache_read_input_tokens: 100,
@@ -74,7 +75,12 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(requests.every((request) => new URL(request.url).hostname === 'api.anthropic.com')).toBe(true);
     expect(requests[0]!.body.messages).toEqual(requests[1]!.body.messages);
     expect(requests[0]!.body.output_config).toEqual(requests[1]!.body.output_config);
+    expect(requests[0]!.body.system).toEqual(requests[1]!.body.system);
     expect(requests[0]!.body.system).toContain('untrusted evidence data');
+    expect(requests[0]!.body.system).toContain('one independently reviewable fact');
+    expect(requests[0]!.body.system).toContain('Never equate immediate staleness with disabled caching');
+    expect(result.request.promptVersion).toBe(CLAUDE_ANALYSIS_PROMPT_VERSION);
+    expect(result.value.implementation[0]!.evidence).toEqual([packet.excerpts[0]!.reference]);
     expect(requests[1]!.body.max_tokens).toBe(2000);
     expect(JSON.stringify(requests[1]!.body.output_config)).not.toMatch(/user_confirmed/);
     expect(JSON.stringify(requests[1]!.body)).not.toContain('CLAUDE_KEY_SENTINEL');
@@ -114,7 +120,7 @@ describe('Claude analysis adapter and CLI default', () => {
   it.each(['bad_citation', 'missing_usage', 'tool_block', 'truncated_json', 'excess_usage'])('rejects %s without retrying', async (kind) => {
     const { provider, requests } = harness((response) => {
       if (kind === 'bad_citation') {
-        const value = JSON.parse(response.content[0].text); value.implementation[0].evidence[0].sourceVersion = 'wrong'; response.content[0].text = JSON.stringify(value);
+        const value = JSON.parse(response.content[0].text); value.implementation[0].evidence = [packet.excerpts.length + 1]; response.content[0].text = JSON.stringify(value);
       }
       if (kind === 'missing_usage') delete response.usage;
       if (kind === 'tool_block') response.content.push({ type: 'tool_use', id: 'call', name: 'shell', input: {} });
@@ -122,7 +128,11 @@ describe('Claude analysis adapter and CLI default', () => {
       if (kind === 'excess_usage') response.usage.output_tokens = 2001;
       return response;
     });
-    await expect(provider.analyze(packet, options())).rejects.toThrow();
+    if (kind === 'bad_citation') {
+      await expect(provider.analyze(packet, options())).rejects.toMatchObject({ code: 'invalid_analysis', validationCode: 'unknown_evidence' });
+    } else {
+      await expect(provider.analyze(packet, options())).rejects.toThrow();
+    }
     expect(requests).toHaveLength(2);
   });
 
@@ -147,5 +157,23 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(data.countRequest.model).toBe('claude-fixture');
     expect(data.analysisRequest.max_tokens).toBe(6000);
     expect(data.analysisRequest).not.toHaveProperty('max_output_tokens');
+
+    const legacyVersion = 'claude-analysis-prompt-v1';
+    const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
+    expect(JSON.parse(data.countRequest.messages[0].content).excerpts[0].citationNumber).toBe(1);
+    expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBeUndefined();
+    const legacyKey = analysisCacheKey(legacy, saved.settings);
+    expect(legacyKey).not.toBe(saved.cache.key);
+    const legacyFile = join(root, 'legacy-analysis.json');
+    saved.result.request.promptVersion = legacyVersion;
+    saved.result.request.wireSchemaVersion = legacy.wireSchemaVersion;
+    saved.cache.key = legacyKey;
+    await writeFile(legacyFile, JSON.stringify(saved));
+    const legacyReport = await loadSavedAnalysis(legacyFile);
+    expect(legacyReport.baseline).toEqual(restored.baseline);
+    saved.result.request.promptVersion = CLAUDE_ANALYSIS_PROMPT_VERSION;
+    saved.result.request.wireSchemaVersion = CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION;
+    await writeFile(legacyFile, JSON.stringify(saved));
+    await expect(loadSavedAnalysis(legacyFile)).rejects.toThrow('cache identity does not match');
   });
 });

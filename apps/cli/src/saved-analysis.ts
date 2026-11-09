@@ -34,6 +34,8 @@ export async function loadSavedAnalysis(path: string) {
     contextWindowTokens: positive(rawSettings.contextWindowTokens), maxInputTokens: positive(rawSettings.maxInputTokens),
     maxOutputTokens: positive(rawSettings.maxOutputTokens), timeoutMs: positive(rawSettings.timeoutMs) };
   if (settings.timeoutMs > 60_000) throw new Error('Invalid saved analysis timeout');
+  const savedRequest = object(object(report.result).request);
+  const savedPromptVersion = identity(savedRequest.promptVersion);
   const receipt = object(report.transmission);
   const sent = object(report.sentInput);
   if (!Array.isArray(sent.excerpts) || sent.excerpts.length > 120 || !Array.isArray(receipt.redactedExcerptIds)
@@ -57,15 +59,14 @@ export async function loadSavedAnalysis(path: string) {
   if ([...redacted].some((id) => !selected.has(id))) throw new Error('Unknown saved redaction');
   // The same pure request builder verifies sensitive-path exclusions, contribution mapping and transmission hashes.
   const prepared = prepareAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings,
-    { allowedExcerptIds: [...selected] });
-  const omittedSelections = object(object(report.result).request).transmission;
-  if (canonicalJson(omittedSelections) !== canonicalJson(receipt)) throw new Error('Inconsistent saved transmission receipts');
+    { allowedExcerptIds: [...selected] }, savedPromptVersion);
+  if (canonicalJson(savedRequest.transmission) !== canonicalJson(receipt)) throw new Error('Inconsistent saved transmission receipts');
   // A requested sensitive path and an unselected sensitive path have different receipt reasons. Neither was sent.
   const omitted = receipt.omitted;
   if (!Array.isArray(omitted) || omitted.length !== prepared.receipt.omitted.length) throw new Error('Invalid saved omissions');
   const sensitiveIds = omitted.filter((value) => ['sensitive_path', 'empty'].includes(String(object(value).reason))).map((value) => object(value).id);
   const withSensitive = prepareAnalysisRequest({ ...packet, complete: packet.complete && !redacted.size }, settings,
-    { allowedExcerptIds: [...selected, ...sensitiveIds.map(identity)] });
+    { allowedExcerptIds: [...selected, ...sensitiveIds.map(identity)] }, savedPromptVersion);
   const restoredReceipt = { ...withSensitive.receipt, redactedExcerptIds: [...redacted] };
   if (canonicalJson(restoredReceipt) !== canonicalJson(receipt) || withSensitive.input !== canonicalJson(sent)) {
     throw new Error('Saved transmission version or payload does not match');

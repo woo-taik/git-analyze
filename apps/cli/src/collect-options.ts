@@ -13,12 +13,20 @@ export function parseCollectOptions(args: readonly string[], now = new Date()) {
     },
   });
   if (!values.repo?.trim()) throw new Error('collect requires --repo <local-path>');
-  const period = values.period as (typeof PERIODS)[number];
-  if (!PERIODS.includes(period)) throw new Error('--period must be 1w, 1m, 3m, or 6m');
   if (!values.ref?.trim() || values.ref.startsWith('-')) throw new Error('Invalid --ref');
   if (values.output !== undefined && !values.output.trim()) throw new Error('Invalid --output');
   if (values.path !== undefined && !values.path.trim()) throw new Error('Invalid --path');
-  if (!Number.isFinite(now.getTime())) throw new Error('Invalid collection time');
+  return {
+    repositoryPath: values.repo, ref: values.ref,
+    ...resolveKstPeriod(values.period, now), outputDirectory: values.output,
+    ...(values.path === undefined ? {} : { pathFilter: values.path }),
+  };
+}
+
+export function resolveKstPeriod(value: string | undefined, now: Date) {
+  const period = (value ?? '1w') as (typeof PERIODS)[number];
+  if (!PERIODS.includes(period)) throw new Error('--period must be 1w, 1m, 3m, or 6m');
+  if (!Number.isFinite(now.getTime())) throw new Error('Invalid period end time');
 
   let start: Date;
   if (period === '1w') {
@@ -32,9 +40,5 @@ export function parseCollectOptions(args: readonly string[], now = new Date()) {
     local.setUTCDate(Math.min(day, lastDay));
     start = new Date(local.getTime() - KST_OFFSET);
   }
-  return {
-    repositoryPath: values.repo, ref: values.ref,
-    period, startAt: start.toISOString(), endAt: now.toISOString(), outputDirectory: values.output,
-    ...(values.path === undefined ? {} : { pathFilter: values.path }),
-  };
+  return { period, startAt: start.toISOString(), endAt: now.toISOString() };
 }

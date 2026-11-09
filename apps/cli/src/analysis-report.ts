@@ -14,7 +14,7 @@ export async function reserveAnalysisDirectory(output: string | undefined, categ
   return directory;
 }
 
-export async function saveAnalysisReports(directory: string, stem: 'preview' | 'analysis' | 'failure' | 'review' | 'resume', data: unknown, markdown: string) {
+export async function saveAnalysisReports(directory: string, stem: 'preview' | 'analysis' | 'failure' | 'review' | 'resume' | 'resume-period', data: unknown, markdown: string) {
   const jsonPath = join(directory, `${stem}.json`);
   const markdownPath = join(directory, `${stem}.md`);
   await writeFile(jsonPath, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });

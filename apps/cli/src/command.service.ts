@@ -10,6 +10,7 @@ import { executeEvidence } from './evidence.js';
 import { executeAnalyze } from './analyze.js';
 import { executeReview } from './review.js';
 import { executeResume } from './resume.js';
+import { executeResumePeriod } from './resume-period.js';
 
 const run = promisify(execFile);
 
@@ -17,7 +18,7 @@ const run = promisify(execFile);
 export class CommandService {
   async run() {
     const [command = 'help', ...extra] = process.argv.slice(2);
-    if (!['collect', 'prepare', 'evidence', 'analyze', 'review', 'resume'].includes(command) && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
+    if (!['collect', 'prepare', 'evidence', 'analyze', 'review', 'resume', 'resume-period'].includes(command) && extra.length) throw new Error('Unexpected arguments. Use: pnpm cli help');
 
     switch (command) {
       case 'help':
@@ -36,6 +37,7 @@ export class CommandService {
           '    [--redactions-file <json-array>] [--dry-run] [--cache-dir <path>] [--no-cache] [--output <new-directory>]',
           '  pnpm cli review --analysis <analysis.json> [--changes <changes.json> --actor <local-user-label>] [--rebase] [--store-dir <path>] [--output <new-directory>]',
           '  pnpm cli resume --review <review.json> --claim <id>... [--kind achievement|activity] [--store-dir <path>] [--output <new-directory>]',
+          '  pnpm cli resume-period --input <selections.json> [--period 1w|1m|3m|6m] [--end <ISO-timestamp>] [--output <new-directory>]',
           '    review and resume are offline. Resume export checks the latest review version, confirmations and completion.',
           '', 'Local committed history. analyze uses Claude and ANTHROPIC_API_KEY; token counting also sends selected excerpts. --dry-run is offline.',
         ].join('\n'));
@@ -61,6 +63,9 @@ export class CommandService {
         return;
       case 'resume':
         console.log(JSON.stringify(await executeResume(extra), null, 2));
+        return;
+      case 'resume-period':
+        console.log(JSON.stringify(await executeResumePeriod(extra), null, 2));
         return;
       case 'providers':
         console.log(JSON.stringify({ providers: PROVIDER_CATALOG }, null, 2));

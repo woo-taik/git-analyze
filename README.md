@@ -28,7 +28,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 TypeScript / Node.js 24 LTS / NestJS + Fastify 어댑터 / PostgreSQL / Drizzle / pg-boss.
 API는 Nest HTTP 앱, CLI와 워커는 Nest 독립 실행 컨텍스트로 구성한다. 공통 도메인과 수집·LLM 계약은 Nest 의존성 없이 유지한다.
 
-로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 Claude 구조화 분석을 CLI에서 실행할 수 있다. 실제 LLM 공급자는 Claude를 사용하고 키는 `ANTHROPIC_API_KEY`로 설정한다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·편집·확인/철회와 한 건의 성과 문장 출력도 로컬 CLI로 연결했다. 원격 fetch·clone, Octokit 보강, 기간별 다중 작업 조합과 React + Vite 검토 UI는 후속이다.
+로컬 Git 이력 수집, 작성자별 후보 선별, 선택한 후보의 코드 변경 근거 추출과 Claude 구조화 분석을 CLI에서 실행할 수 있다. 실제 LLM 공급자는 Claude를 사용하고 키는 `ANTHROPIC_API_KEY`로 설정한다. 분석은 전송 미리보기·JSON/Markdown 저장·로컬 캐시 재사용을 제공한다. 사용자 보충·편집·확인/철회와 한 건의 성과 문장 및 기간별 여러 작업 출력도 로컬 CLI로 연결했다. 원격 fetch·clone, Octokit 보강과 React + Vite 검토 UI는 후속이다.
 
 ## 시작
 
@@ -126,6 +126,8 @@ pnpm cli resume --review ".data\law-review-approved\review.json" --claim "implem
 
 두 명령은 키 없이 외부 요청 0회로 동작한다. 보충·편집은 미확인으로 저장하고 정확한 문구를 확인한 뒤 사용한다. 기본 완료 성과에는 결과·완료 확인과 사용자 확인된 본인 기여가 필요하다. 문장은 선택한 주장 문구를 연결하고 각 절의 원본과 확인 기록을 보존한다. 철회 후 오래된 검토 보고서로 새 문장을 출력할 수 없다. 입력 형식과 재분석 시 편집 보존은 [검토 CLI 사용법](docs/review-resume-cli.md)을 따른다.
 
+`pnpm cli resume-period --input .data\selections.json --period 1m`은 선택한 최신 검토 보고서에서 중복 작업을 제거하고 완료 성과와 기간 내 활동을 나눠 출력한다. 완료일은 사용자 확인을 사용하며 활동에는 Git 커미터 시각을 표시한다. 기간을 바꿔도 기존 분석과 검토를 재사용한다. [기간 입력 형식](docs/review-resume-cli.md#5-기간별-여러-작업-출력)
+
 - `GET /health`: 프로세스 생존 확인.
 - `GET /ready`: 업무 파이프라인 미구현 상태이므로 현재 503을 반환.
 - `GET /v1/providers`: 공급자별 문서상 기능과 구현 예정 상태.
@@ -142,7 +144,7 @@ DB가 필요할 때 Docker 환경에서 `pnpm db:up`, `.env` 설정 후 `pnpm db
 현재 완료: 모노레포, Nest 실행 골격, 공통 계약, 공급자 카탈로그, 로컬 Git 수집·기간 선택·JSON/Markdown 출력, 이메일·별칭 기반 후보 선별·참조별 묶기·수동 포함/제외, 선택 커밋의 크기 제한 근거 추출·추출 캐시·수동 묶기, 분석 입력 변환·원본 매핑·내용/입력 버전 검사, 초기 DB schema/migration, 기본·Git·후보·근거·분석 입력 테스트.
 추가 완료: 근거 파일 런타임 검증·명시적 원본 매핑, 분석 CLI·오프라인 전송 미리보기·분석/실패 저장·사용량 기록·분석 캐시와 동시 miss 차단.
 추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 시 초안 보존, 최신 검토 상태 기반 한 건의 성과/활동 문장과 절별 추적.
-미구현: 원격 동기화·DB 분석/검토 저장·기간별 다중 작업 성과 조합·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
+미구현: 원격 동기화·DB 분석/검토 저장·UI. 워커는 실제 핸들러 연결 전까지 일반 시작을 거부하며 `worker:check`로만 골격을 확인한다.
 
 분석 입력 변환은 core의 `toEvidencePacket`으로 제공한다. 호출자가 명시한 소유자·저장소·작업과 커밋별 원본 스냅샷을 연결하며, 근거 ID·기여·생략 사유를 보존한다. 추출 내용 버전을 검증하고 매핑을 포함한 별도 분석 입력 버전을 계산한다. CLI는 파일 검증 후 이 변환을 분석 어댑터에 연결한다. DB 원본 등록은 후속이다.
 

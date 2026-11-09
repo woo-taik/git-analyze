@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { executeAnalyze } from '../apps/cli/src/analyze.js';
 import { executeReview } from '../apps/cli/src/review.js';
 import { executeResume } from '../apps/cli/src/resume.js';
+import { executeResumePeriod } from '../apps/cli/src/resume-period.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
 import { hash } from '../apps/cli/src/analysis-cache.js';
 import { loadStoredReview, persistReview, reviewDirectory } from '../apps/cli/src/review-store.js';
@@ -24,6 +25,7 @@ let root: string;
 let analysisFile: string;
 let alternateFile: string;
 let redactedFile: string;
+let activityFile: string;
 let sequence = 0;
 let saved: Awaited<ReturnType<typeof loadSavedAnalysis>>;
 const json = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
@@ -70,6 +72,7 @@ beforeAll(async () => {
       startAt: '2026-10-20T00:00:00Z', endAt: '2026-10-27T00:00:00Z' } });
   const bindings = await save({ schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', workItemId: 'work',
     sources: [{ ownerId: 'owner', repositoryId: 'repo', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] });
+  const activityBindings = await save({ ...await json(bindings), workItemId: 'ongoing-work' });
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     if (String(url).endsWith('/input_tokens')) return Response.json({ object: 'response.input_tokens', input_tokens: 1200 });
     const body = JSON.parse(init!.body as string);
@@ -85,13 +88,15 @@ beforeAll(async () => {
       content: [{ type: 'output_text', text: JSON.stringify(value) }] }], usage: { input_tokens: 1200, output_tokens: 300, total_tokens: 1500,
       input_tokens_details: { cached_tokens: 0 } } });
   });
-  for (const [epoch, redact] of [['v1', false], ['v2', false], ['v1', true]] as const) {
+  for (const [epoch, redact, bindingFile] of [['v1', false, bindings], ['v2', false, bindings],
+    ['v1', true, bindings], ['v1', false, activityBindings]] as const) {
     const redactions = redact ? await save(['PRIVATE_SENTINEL']) : null;
-    const result = await executeAnalyze(['--provider', 'openai', '--input', evidence, '--bindings', bindings,
+    const result = await executeAnalyze(['--provider', 'openai', '--input', evidence, '--bindings', bindingFile,
       ...local.excerpts.flatMap((excerpt) => ['--excerpt', excerpt.id]), '--model', 'fixture-model', '--model-epoch', epoch,
       '--context-window', '16000', '--output', output(), '--cache-dir', join(root, 'analysis-cache'),
       ...(redactions ? ['--redactions-file', redactions] : [])], { fetch, env: { OPENAI_API_KEY: 'FIXTURE_KEY' } });
-    if (redact) redactedFile = result.jsonPath;
+    if (bindingFile === activityBindings) activityFile = result.jsonPath;
+    else if (redact) redactedFile = result.jsonPath;
     else if (epoch === 'v1') analysisFile = result.jsonPath;
     else alternateFile = result.jsonPath;
   }
@@ -195,6 +200,54 @@ describe('offline review persistence and export', () => {
     expect((await json(first.jsonPath)).state.analysis.results).toHaveLength(1);
   });
 
+  it('exports multiple reviewed works once each, splits completion and activity, and reuses reviews across periods', async () => {
+    const storeDirectory = store();
+    const complete = await review(storeDirectory, approvals);
+    const activity = await review(storeDirectory, [approvals[2]!], ['--analysis', activityFile]);
+    const completeItem = { review: `${basename(dirname(complete.jsonPath))}/review.json`,
+      claimIds: ['implementation-1', 'user-result', 'contribution-1'] };
+    const activityItem = { review: activity.jsonPath, claimIds: ['implementation-1', 'contribution-1'] };
+    const manifest = { schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', items: [activityItem, completeItem, completeItem] };
+    const input = await save(manifest);
+    const args = ['--input', input, '--end', '2026-10-27T09:00:00+09:00'];
+    const first = await executeResumePeriod([...args, '--output', output()]);
+    expect(first).toMatchObject({ achievements: 1, activities: 1, outsidePeriod: 0, externalRequests: 0 });
+    const report = await json(first.jsonPath);
+    expect(report.achievements[0]).toMatchObject({ reviewVersion: complete.version, dateBasis: 'user_confirmed_completion',
+      bullet: { workItemId: 'work' } });
+    expect(report.activities[0]).toMatchObject({ reviewVersion: activity.version, dateBasis: 'git_committer_date',
+      activityCommits: [{ oid, committedAt: '2026-10-26T00:00:00Z' }], bullet: { workItemId: 'ongoing-work' } });
+    expect(report.achievements[0].trace[1].confirmation.event.actor).toBe('fixture-user');
+    expect(report.activities[0].trace[0].evidence[0].commitOid).toBe(oid);
+    const wide = await executeResumePeriod([...args, '--period', '1m', '--output', output()]);
+    expect(wide.version).not.toBe(first.version);
+    expect(wide.externalRequests).toBe(0);
+    expect((await json(wide.jsonPath)).achievements[0].version).toBe(report.achievements[0].version);
+    const reorder = await save({ ...manifest, items: [completeItem, activityItem] });
+    const repeated = await executeResumePeriod(['--input', reorder, '--end', args[3]!, '--output', output()]);
+    expect(repeated.version).toBe(first.version);
+    const exclusive = await executeResumePeriod(['--input', input, '--end', '2026-10-26T00:00:00Z', '--output', output()]);
+    expect(exclusive).toMatchObject({ achievements: 1, activities: 0, outsidePeriod: 1 });
+    const inclusive = await executeResumePeriod(['--input', input, '--end', '2026-11-02T00:00:00Z', '--output', output()]);
+    expect(inclusive).toMatchObject({ achievements: 0, activities: 2, outsidePeriod: 0 });
+  });
+
+  it('rejects conflicting and stale work selections before writing a period report', async () => {
+    const storeDirectory = store();
+    const approved = await review(storeDirectory, approvals);
+    const item = { review: approved.jsonPath, claimIds: ['implementation-1', 'user-result', 'contribution-1'] };
+    const input = { schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', items: [item] };
+    const args = ['--end', '2026-10-27T00:00:00Z', '--output', output()];
+    await expect(executeResumePeriod(['--input', await save(input), '--end', '2026-02-30T00:00:00Z'])).rejects.toThrow('ISO 8601');
+    const conflicting = await save({ ...input, items: [item, { ...item, claimIds: ['contribution-1'] }] });
+    await expect(executeResumePeriod(['--input', conflicting, ...args])).rejects.toThrow('Conflicting');
+    const wrongOwner = await save({ ...input, ownerId: 'other-owner' });
+    await expect(executeResumePeriod(['--input', wrongOwner, ...args])).rejects.toThrow('outside the requested owner');
+    const report = await json(approved.jsonPath);
+    await review(storeDirectory, [{ kind: 'revoke', confirmationId: report.state.confirmations[1].id }]);
+    await expect(executeResumePeriod(['--input', await save(input), ...args])).rejects.toThrow('stale');
+  });
+
   it('makes old review snapshots stale after revocation and blocks the revoked claim in a fresh report', async () => {
     const storeDirectory = store();
     const approved = await review(storeDirectory, approvals);
@@ -285,7 +338,7 @@ describe('offline review persistence and export', () => {
     const reviewOutput = output();
     const storeDirectory = store();
     const changed = await save({ schemaVersion: 1, actions: approvals });
-    const env = { ...process.env, OPENAI_API_KEY: '' };
+    const env = { ...process.env, ANTHROPIC_API_KEY: '', OPENAI_API_KEY: '' };
     const first = await run(process.execPath, ['apps/cli/dist/index.js', 'review', '--analysis', analysisFile,
       '--changes', changed, '--actor', 'fixture-user', '--store-dir', storeDirectory, '--output', reviewOutput],
     { cwd: projectRoot, env, timeout: 15_000, windowsHide: true });
@@ -295,5 +348,11 @@ describe('offline review persistence and export', () => {
     { cwd: projectRoot, env, timeout: 15_000, windowsHide: true });
     expect(JSON.parse(last.stdout)).toMatchObject({ status: 'resume_draft', externalRequests: 0 });
     expect(last.stdout).not.toContain('중복 주문');
+    const selection = await save({ schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', items: [
+      { review: join(reviewOutput, 'review.json'), claimIds: ['implementation-1', 'user-result', 'contribution-1'] },
+    ] });
+    const period = await run(process.execPath, ['apps/cli/dist/index.js', 'resume-period', '--input', selection,
+      '--end', '2026-10-27T00:00:00Z', '--output', output()], { cwd: projectRoot, env, timeout: 15_000, windowsHide: true });
+    expect(JSON.parse(period.stdout)).toMatchObject({ status: 'resume_period', achievements: 1, externalRequests: 0 });
   }, 30_000);
 });

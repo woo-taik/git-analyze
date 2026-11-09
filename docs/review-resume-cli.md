@@ -92,3 +92,27 @@ pnpm cli review --analysis ".data\law-analysis-new\analysis.json" --rebase --act
 기존 사용자 편집과 추가 답변은 미확인 초안으로 보존한다. 새 근거에 없는 인용은 제거하고 기존 확인은 철회 상태로, 완료 상태는 미확인으로 되돌린다. 작업 범위·주장 섹션이 충돌하면 자동 병합하지 않는다. 같은 실제 전송 입력·분석 주장으로 경로·기간·모델 메타데이터만 바뀐 보고서는 기존 검토 상태를 재사용한다.
 
 원시 LLM 분석 캐시는 사용자 확인과 독립적이다. 검토 명령은 모델 분석을 다시 호출하거나 생성 캐시를 수정하지 않는다. 문장 버전은 현재 검토 버전·선택 주장·출력 정책을 포함하므로 확인·철회가 바뀌면 달라진다. 문장은 매번 오프라인으로 조합한다. 사용자 보충을 모델 입력에 넣는 후속 기능을 추가한다면 별도 전송 검토와 분석 캐시 무효화가 필요하다.
+
+## 5. 기간별 여러 작업 출력
+
+`resume-period`는 한 소유자·저장소의 최신 검토 보고서와 작업별 주장 선택을 입력받는다. 아래 `selections.json`의 경로는 이 입력 파일을 기준으로 해석한다. 절대 경로도 사용할 수 있다. 작업별 주장 ID는 실제 검토 보고서에서 확인한다.
+
+```json
+{
+  "schemaVersion": 1,
+  "ownerId": "owner",
+  "repositoryId": "law",
+  "items": [
+    { "review": "review-a/review.json", "claimIds": ["implementation-1", "user-result-1", "contribution-1"] },
+    { "review": "review-b/review.json", "claimIds": ["implementation-1", "contribution-1"] }
+  ]
+}
+```
+
+```powershell
+pnpm cli resume-period --input ".data\selections.json" --period 1m --end "2026-11-09T00:00:00+09:00" --output ".data\law-month"
+```
+
+기본 기간은 `1w`이며 `1m`, `3m`, `6m`도 지원한다. `--end`를 생략하면 실행 시각을 사용한다. 기간은 `Asia/Seoul` 달력으로 계산한 `[start, end)`이고 출력 JSON에 UTC 절대 시각을 저장한다. 기간 안에 사용자 확인 완료일이 있으면 완료 성과로, 그 외에는 기간 안에 Git 커밋이 있는 작업을 기간 내 활동으로 분류한다. 활동의 날짜는 최신 커미터 시각을 사용한다. 기간 밖의 작업 ID도 JSON에 남긴다.
+
+같은 작업과 주장 선택을 반복하면 하나만 남기고, 같은 작업의 검토 버전이나 주장 선택이 다르면 입력을 거부한다. 최대 50개 선택을 받는다. 분류에 맞는 `resume` 승인 조건을 적용하고 출력 전에 모든 선택의 최신 검토 버전을 확인한다. 기간을 바꿔도 기존 분석을 재사용하며 `resume-period.json`과 `resume-period.md`를 외부 요청 없이 작성한다.
