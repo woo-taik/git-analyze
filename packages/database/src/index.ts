@@ -3,11 +3,24 @@ import pg from 'pg';
 import * as schema from './schema.js';
 
 export * from './schema.js';
-export { archiveWork, withArchivedReview } from './work-archive.js';
-export type { ArchiveScope, ArchivedAnalysis, ArchivedReview, WorkArchiveRevision } from './work-archive.js';
+export { archiveWork, withArchivedReview, listArchivedWorks, ArchiveNotFoundError } from './work-archive.js';
+export type { ArchiveScope, ArchivedAnalysis, ArchivedReview, WorkArchiveRevision,
+  ArchivedReviewSnapshot, ArchivedWorkSummary } from './work-archive.js';
 
 // Pool is lazy: importing this module does not connect or run migrations.
-export function createDatabase(connectionString: string) {
-  const pool = new pg.Pool({ connectionString, max: 5 });
+export function createDatabase(connectionString: string, options: {
+  readonly connectionTimeoutMillis?: number;
+  readonly statementTimeoutMillis?: number;
+  readonly onIdleError?: () => void;
+} = {}) {
+  const pool = new pg.Pool({ connectionString, max: 5,
+    ...(options.connectionTimeoutMillis === undefined ? {} : { connectionTimeoutMillis: options.connectionTimeoutMillis }),
+    ...(options.statementTimeoutMillis === undefined ? {} : { statement_timeout: options.statementTimeoutMillis }),
+  });
+  // Idle client failures arrive outside query promises. Keep the pool recoverable and never log connection details.
+  pool.on('error', () => {
+    if (options.onIdleError) options.onIdleError();
+    else console.error('PostgreSQL idle connection failed');
+  });
   return { db: drizzle(pool, { schema }), close: () => pool.end() };
 }

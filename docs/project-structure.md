@@ -103,15 +103,17 @@ compose.yaml                     로컬 PostgreSQL
 
 ### API
 
-[index.ts](../apps/api/src/index.ts)가 설정을 읽고 [app.ts](../apps/api/src/app.ts)로 앱을 생성한 뒤 포트를 연다. [AppModule](../apps/api/src/app.module.ts)은 `HealthModule`과 `RepositoriesModule`을 조립한다.
+[index.ts](../apps/api/src/index.ts)가 설정을 읽고 [app.ts](../apps/api/src/app.ts)로 앱을 생성한 뒤 포트를 연다. [AppModule](../apps/api/src/app.module.ts)은 `HealthModule`, `RepositoriesModule`, 설정을 전달받는 `WorkArchiveModule`을 조립한다. 검토 API의 DB pool은 앱 종료 시 닫는다.
 
-HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. 현재 `RepositoryCatalogService`는 공급자 카탈로그만 반환한다. 수집 작업 접수·저장소 등록·사용자 인증은 아직 없다.
+HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. `RepositoryCatalogService`는 공급자 카탈로그를, `WorkArchiveService`는 PostgreSQL의 검토 목록·상세·문장을 반환한다. 문장 정책과 근거 추적은 CLI와 core에서 공유한다. 수집 작업 접수·저장소 등록·사용자 인증은 아직 없다.
 
 현재 경로:
 
 - `GET /health`: HTTP 프로세스 생존 상태, 200.
-- `GET /ready`: 업무 파이프라인 미구현 상태, 503.
+- `GET /ready`: DB 검토 조회 준비 상태. 사용 가능하면 200, DB 미설정·접속/스키마 오류는 503. 비동기 분석은 준비 상태에 포함하지 않는다.
 - `GET /v1/providers`: 공급자별 문서상 기능과 구현 상태.
+- `GET /v1/owners/:ownerId/repositories/:repositoryId/work-items`: 저장된 작업 목록과 페이지 조회.
+- 위 경로의 `/:workItemId`, `/:workItemId/resume`: 최신 검토·근거 및 선택한 주장의 문장. 상세 계약은 [로컬 검토 API](archive-api.md)를 따른다.
 
 ### CLI
 
@@ -250,7 +252,7 @@ core → 앱·Nest·DB·공급자 SDK에 의존하지 않음
 - 수집·분석·이력서 API는 실제 기능이 구현될 때 Nest 기능 모듈로 추가한다.
 - 소유권·입력 버전·멱등성 검사는 실제 유스케이스에서 수행해야 한다.
 
-DB는 아직 앱에 연결하지 않았다. 실제 기능을 추가할 때 Nest provider로 조립한다. 현재 의존성 방향은 코드와 workspace 설정으로 표현되어 있으며 별도의 금지 import lint 규칙은 없다.
+DB는 CLI의 가져오기·문장 복원과 API의 검토 조회에 연결했다. API는 Nest provider로 pool 수명 주기를 관리한다. 현재 의존성 방향은 코드와 workspace 설정으로 표현되어 있으며 별도의 금지 import lint 규칙은 없다.
 
 ## 6. 개발 환경과 실행
 
@@ -290,7 +292,7 @@ pnpm start:api
 - 별도 Nest CLI·번들러·빌드 오케스트레이터는 아직 도입하지 않았다.
 - `check`는 빌드 후 Vitest를 실행한다.
 
-기본 테스트 다섯 개는 생존/준비 상태 구분, 공급자의 문서상 기능/미구현 상태 구분, 미구현 HTTP 수집 요청 거부, 설정 오류의 비밀 값 비노출, 핸들러 없는 워커의 연결 전 거부를 확인한다.
+기본 테스트는 생존/준비 상태 구분, 공급자의 문서상 기능/미구현 상태 구분, 미구현 HTTP 수집 요청 거부, 설정 오류의 비밀 값 비노출, 핸들러 없는 워커의 연결 전 거부를 확인한다. 검토 API의 입력 한도·긴 식별자·로컬 접근 조건·DB 오류 비노출과 pool 유휴 연결 오류 처리도 검증한다. 전용 DB를 지정하면 검토 가져오기/조회/철회와 실제 재연결·분석 테이블 누락을 추가로 검증한다.
 
 Git 통합 테스트는 임시 저장소에서 기간 경계·KST 월말·과거 날짜의 자식 커밋·root와 merge·rename·한글 경로·작업 트리 보존·shallow 거부·출력 덮어쓰기 방지·빌드된 CLI 실행을 확인한다. 외부 GitHub·SourceCommit 연결, LLM 품질, PostgreSQL 쿼리와 운영 성능은 검증하지 않는다.
 
@@ -330,7 +332,7 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 편집 초안 보존, 최신 검토 버전 기반 한 작업의 성과/활동 문장과 절별 근거 추적.
 
-`resume-period`는 한 저장소에서 명시적으로 선택한 여러 최신 검토를 기간별 Markdown과 JSON으로 출력한다. `db-archive`는 작업의 원본 커밋·분석·검토 버전을 PostgreSQL에 저장하고 `resume-db`는 저장된 최신 검토에서 단일 작업의 문장과 근거를 출력한다. 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·API/워커·검토 UI는 후속이다. 실제 Claude로 law 표본 3건을 재검증했고 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
+`resume-period`는 한 저장소에서 명시적으로 선택한 여러 최신 검토를 기간별 Markdown과 JSON으로 출력한다. `db-archive`는 작업의 원본 커밋·분석·검토 버전을 PostgreSQL에 저장하고 `resume-db`는 저장된 최신 검토에서 단일 작업의 문장과 근거를 출력한다. 로컬 검토 조회 API는 DB 작업 목록·최신 검토·성과 문장을 제공한다. 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·비동기 분석 API/워커·검토 UI는 후속이다. 실제 Claude로 law 표본 3건을 재검증했고 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
 
 ## 10. 관련 문서
 

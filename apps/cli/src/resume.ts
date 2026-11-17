@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { composeResumeBullet, RESUME_POLICY_VERSION, type ReviewContext } from '@git-analyze/core';
+import { composeResumeWithTrace, RESUME_POLICY_VERSION, type ReviewContext } from '@git-analyze/core';
 import { hash } from './analysis-cache.js';
 import { object, readBoundedJson } from './analysis-input.js';
 import { analysisSourceLines, renderAnalysisMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
@@ -29,16 +29,7 @@ type ResumeReview = Pick<LocalReview, 'version'> & {
 };
 
 export function buildResumeDraft(current: ResumeReview, claimIds: readonly string[], kind: 'achievement' | 'activity') {
-  const bullet = composeResumeBullet(current.stored.state, current.context, claimIds, kind);
-  const trace = bullet.clauses.map((clause) => ({ ...clause,
-    confirmation: clause.confirmationId === null ? null : {
-      record: current.stored.state.confirmations.find((record) => record.id === clause.confirmationId),
-      event: current.stored.state.events.find((event) => event.id === clause.confirmationId),
-    }, evidence: clause.evidence.map((reference) => {
-      const excerpt = current.context.packet.excerpts.find((item) => hash(item.reference) === hash(reference));
-      if (!excerpt) throw new Error('Missing original excerpt for selected claim');
-      return { reference, excerptId: excerpt.id, commitOid: excerpt.commitOid, parentOid: excerpt.parentOid, path: excerpt.path, text: excerpt.text };
-    }) }));
+  const { bullet, trace } = composeResumeWithTrace(current.stored.state, current.context, claimIds, kind);
   const version = hash({ policyVersion: RESUME_POLICY_VERSION, reviewVersion: current.version, bullet });
   return { policyVersion: RESUME_POLICY_VERSION, version, source: current.saved.source, reviewVersion: current.version,
     reviewRevision: current.stored.revision, bullet, trace, review: current.stored.state };

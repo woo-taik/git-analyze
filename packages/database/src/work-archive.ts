@@ -1,11 +1,25 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson, validateReviewState, validateWorkItemAnalysis,
   type EvidencePacket, type LlmUsage, type ReviewState, type WorkItemAnalysis } from '@git-analyze/core';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { createDatabase } from './index.js';
 import { owners, repositories, sourceRecords, workAnalysisVersions, workItems, workItemSources, workReviewVersions } from './schema.js';
 
 export type ArchiveScope = Pick<EvidencePacket, 'ownerId' | 'repositoryId' | 'workItemId'>;
+export class ArchiveNotFoundError extends Error {
+  constructor() {
+    super('Archived work item was not found');
+    this.name = 'ArchiveNotFoundError';
+  }
+}
+
+export interface ArchivedWorkSummary {
+  readonly workItemId: string;
+  readonly title: string;
+  readonly revision: number;
+  readonly reviewVersion: string;
+}
+
 export interface ArchivedAnalysis {
   readonly analysisVersion: string;
   readonly packet: EvidencePacket;
@@ -52,13 +66,39 @@ function validateRevision(scope: ArchiveScope, entry: WorkArchiveRevision) {
   return { version, context, stored: { revision: review.revision, state: validateReviewState(review.state, context) }, saved: { source: analysis.source } };
 }
 
+export type ArchivedReviewSnapshot = ReturnType<typeof validateRevision>;
+
+/** Read bounded summaries without loading the archived evidence or local file paths. */
+export async function listArchivedWorks(db: Database, scope: Pick<ArchiveScope, 'ownerId' | 'repositoryId'>,
+  page: { readonly limit: number; readonly offset: number }): Promise<{
+    items: ArchivedWorkSummary[]; nextOffset: number | null;
+  }> {
+  if (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > 100
+    || !Number.isSafeInteger(page.offset) || page.offset < 0 || page.offset > Number.MAX_SAFE_INTEGER - page.limit) {
+    throw new Error('Invalid archive pagination');
+  }
+  const latest = db.select({ revision: workReviewVersions.revision, version: workReviewVersions.version })
+    .from(workReviewVersions).where(eq(workReviewVersions.workItemId, workItems.id))
+    .orderBy(desc(workReviewVersions.revision)).limit(1).as('latest_review');
+  const rows = await db.select({ workItemId: workItems.externalId, title: workItems.title,
+    revision: latest.revision, reviewVersion: latest.version }).from(workItems)
+    .innerJoin(repositories, and(eq(workItems.repositoryId, repositories.id), eq(workItems.ownerId, repositories.ownerId)))
+    .innerJoin(owners, eq(workItems.ownerId, owners.id))
+    .innerJoinLateral(latest, sql`true`)
+    .where(and(eq(owners.externalId, scope.ownerId), eq(repositories.provider, 'local'),
+      eq(repositories.instance, localInstance), eq(repositories.externalId, scope.repositoryId)))
+    .orderBy(asc(workItems.externalId), asc(workItems.id)).limit(page.limit + 1).offset(page.offset);
+  return { items: rows.slice(0, page.limit), nextOffset: rows.length > page.limit ? page.offset + page.limit : null };
+}
+
 async function lockWork(tx: Transaction, scope: ArchiveScope) {
   const [work] = await tx.select({ id: workItems.id, ownerId: workItems.ownerId, repositoryId: workItems.repositoryId }).from(workItems)
-    .innerJoin(repositories, eq(workItems.repositoryId, repositories.id)).innerJoin(owners, eq(workItems.ownerId, owners.id))
+    .innerJoin(repositories, and(eq(workItems.repositoryId, repositories.id), eq(workItems.ownerId, repositories.ownerId)))
+    .innerJoin(owners, eq(workItems.ownerId, owners.id))
     .where(and(eq(owners.externalId, scope.ownerId), eq(repositories.provider, 'local'), eq(repositories.instance, localInstance),
       eq(repositories.externalId, scope.repositoryId), eq(workItems.externalId, scope.workItemId)))
     .for('update', { of: workItems });
-  if (!work) throw new Error('Archived work item was not found');
+  if (!work) throw new ArchiveNotFoundError();
   return work;
 }
 
@@ -126,7 +166,7 @@ export async function archiveWork(db: Database, scope: ArchiveScope, revisions: 
 }
 
 export async function withArchivedReview<T>(db: Database, scope: ArchiveScope,
-  operation: (current: ReturnType<typeof validateRevision>) => Promise<T>) {
+  operation: (current: ArchivedReviewSnapshot) => Promise<T>) {
   return db.transaction(async (tx) => {
     const work = await lockWork(tx, scope);
     const [entry] = await tx.select({ version: workReviewVersions.version, revision: workReviewVersions.revision,

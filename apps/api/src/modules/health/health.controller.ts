@@ -1,15 +1,17 @@
-import { Controller, Get, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Header, Inject } from '@nestjs/common';
+import { WorkArchiveService } from '../work-archive/work-archive.service.js';
 
 @Controller()
 export class HealthController {
+  constructor(@Inject(WorkArchiveService) private readonly archive: WorkArchiveService) {}
   @Get('health')
   health() {
     return { status: 'ok', service: 'git-analyze-api' };
   }
 
   @Get('ready')
-  @HttpCode(HttpStatus.SERVICE_UNAVAILABLE)
+  @Header('Cache-Control', 'no-store')
   ready() {
-    return { status: 'not_ready', reason: 'business_pipeline_not_implemented' };
+    return this.archive.readiness();
   }
 }

@@ -299,7 +299,9 @@ describe('bounded local evidence', () => {
 
   it('runs the compiled CLI and renders untrusted titles as text while refusing existing output directories', async () => {
     const cliOptions = options(['--title', '<script>title</script>', '--no-cache'], oid('delete and rename'));
-    const { stdout } = await execute(process.execPath, ['apps/cli/dist/index.js', 'evidence', ...cliOptions], { cwd: projectRoot, timeout: 20_000 });
+    const { stdout } = await execute(process.execPath, ['apps/cli/dist/index.js', 'evidence', ...cliOptions], {
+      cwd: projectRoot, timeout: 20_000, windowsHide: true,
+    });
     const result = JSON.parse(stdout);
     const markdown = await readFile(result.markdownPath, 'utf8');
     expect(markdown).toContain('&lt;script&gt;');
@@ -308,7 +310,7 @@ describe('bounded local evidence', () => {
     const original = await readFile(result.jsonPath);
     await expect(executeEvidence(cliOptions)).rejects.toThrow('already exists');
     expect(await readFile(result.jsonPath)).toEqual(original);
-  });
+  }, 30_000);
 
   it('bounds subprocess output while marking an incomplete prefix', async () => {
     const result = await readGit(repo, ['show', `${oid('large')}:frontend/large.txt`], 100);

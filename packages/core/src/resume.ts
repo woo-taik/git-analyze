@@ -1,6 +1,7 @@
 import type { Claim, EvidenceReference, ResumeBullet } from './evidence.js';
 import { ANALYSIS_CLAIM_FIELDS } from './analysis-schema.js';
 import { validateReviewState, type ClaimSection, type ReviewContext, type ReviewState } from './review.js';
+import { canonicalJson } from './canonical-json.js';
 
 export const RESUME_POLICY_VERSION = 'exact-claim-sentence-v1';
 export interface TraceableResumeBullet extends ResumeBullet {
@@ -11,7 +12,10 @@ export interface TraceableResumeBullet extends ResumeBullet {
   readonly completion: ReviewState['completion'];
 }
 
-function fail(code: string): never { throw new Error(`Resume output rejected: ${code}`); }
+export class ResumeOutputError extends Error {
+  constructor(readonly code: string) { super(`Resume output rejected: ${code}`); }
+}
+function fail(code: string): never { throw new ResumeOutputError(code); }
 function fragment(claim: Claim): string {
   const text = claim.text.trim().replace(/\s+/g, ' ').replace(/[.!?。]+$/, '');
   if (!text || /[.!?。](?:\s|$)/.test(text)) fail('multiple_sentences_in_claim_edit_first');
@@ -47,4 +51,20 @@ export function composeResumeBullet(review: ReviewState, context: ReviewContext,
   text += '.';
   if (text.length > 4096) fail('sentence_too_long');
   return { workItemId: review.workItemId, text, claimIds: [...claimIds], kind, clauses, completion: current.completion };
+}
+
+/** Shared CLI/API projection: resolve every selected clause to its stored evidence and user action. */
+export function composeResumeWithTrace(review: ReviewState, context: ReviewContext, claimIds: readonly string[],
+  kind: 'achievement' | 'activity' = 'achievement') {
+  const bullet = composeResumeBullet(review, context, claimIds, kind);
+  const trace = bullet.clauses.map((clause) => ({ ...clause,
+    confirmation: clause.confirmationId === null ? null : {
+      record: review.confirmations.find((record) => record.id === clause.confirmationId),
+      event: review.events.find((event) => event.id === clause.confirmationId),
+    }, evidence: clause.evidence.map((reference) => {
+      const excerpt = context.packet.excerpts.find((item) => canonicalJson(item.reference) === canonicalJson(reference));
+      if (!excerpt) throw new Error('Missing original excerpt for selected claim');
+      return { reference, excerptId: excerpt.id, commitOid: excerpt.commitOid, parentOid: excerpt.parentOid, path: excerpt.path, text: excerpt.text };
+    }) }));
+  return { bullet, trace };
 }

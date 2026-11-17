@@ -13,6 +13,8 @@ import { executeResumePeriod } from '../apps/cli/src/resume-period.js';
 import { executeDbArchive, executeResumeDb } from '../apps/cli/src/work-archive.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
 import { hash } from '../apps/cli/src/analysis-cache.js';
+import { buildApp } from '../apps/api/src/app.js';
+import { loadConfig } from '@git-analyze/config';
 import { loadStoredReview, persistReview, reviewDirectory } from '../apps/cli/src/review-store.js';
 import { applyReviewChanges, buildLocalEvidence, composeResumeBullet, createReviewState, parseReviewChanges,
   validateReviewState, type ReviewAction } from '../packages/core/src/index.js';
@@ -31,6 +33,9 @@ let alternateFile: string;
 let redactedFile: string;
 let activityFile: string;
 let archiveFile: string;
+let archiveSecondFile: string;
+let archiveOtherOwnerFile: string;
+let archiveOtherRepoFile: string;
 let sequence = 0;
 let saved: Awaited<ReturnType<typeof loadSavedAnalysis>>;
 const json = async (path: string) => JSON.parse(await readFile(path, 'utf8'));
@@ -80,6 +85,11 @@ beforeAll(async () => {
   const activityBindings = await save({ ...await json(bindings), workItemId: 'ongoing-work' });
   const archiveBindings = testDatabaseUrl ? await save({ ...await json(bindings), ownerId: archiveOwnerId,
     sources: [{ ownerId: archiveOwnerId, repositoryId: 'repo', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] }) : null;
+  const secondBindings = archiveBindings ? await save({ ...await json(archiveBindings), workItemId: 'work-2' }) : null;
+  const otherOwnerBindings = archiveBindings ? await save({ ...await json(archiveBindings), ownerId: `${archiveOwnerId}-other`,
+    sources: [{ ownerId: `${archiveOwnerId}-other`, repositoryId: 'repo', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] }) : null;
+  const otherRepoBindings = archiveBindings ? await save({ ...await json(archiveBindings), repositoryId: 'repo-other',
+    sources: [{ ownerId: archiveOwnerId, repositoryId: 'repo-other', commitOid: oid, sourceRecordId: 'source-1', sourceVersion: 'source-v1' }] }) : null;
   const fetch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
     if (String(url).endsWith('/input_tokens')) return Response.json({ object: 'response.input_tokens', input_tokens: 1200 });
     const body = JSON.parse(init!.body as string);
@@ -98,6 +108,7 @@ beforeAll(async () => {
   const fixtures: [string, boolean, string][] = [['v1', false, bindings], ['v2', false, bindings],
     ['v1', true, bindings], ['v1', false, activityBindings]];
   if (archiveBindings) fixtures.push(['v1', true, archiveBindings]);
+  for (const binding of [secondBindings, otherOwnerBindings, otherRepoBindings]) if (binding) fixtures.push(['v1', true, binding]);
   for (const [epoch, redact, bindingFile] of fixtures) {
     const redactions = redact ? await save(['PRIVATE_SENTINEL']) : null;
     const result = await executeAnalyze(['--provider', 'openai', '--input', evidence, '--bindings', bindingFile,
@@ -105,6 +116,9 @@ beforeAll(async () => {
       '--context-window', '16000', '--output', output(), '--cache-dir', join(root, 'analysis-cache'),
       ...(redactions ? ['--redactions-file', redactions] : [])], { fetch, env: { OPENAI_API_KEY: 'FIXTURE_KEY' } });
     if (bindingFile === archiveBindings) archiveFile = result.jsonPath;
+    else if (bindingFile === secondBindings) archiveSecondFile = result.jsonPath;
+    else if (bindingFile === otherOwnerBindings) archiveOtherOwnerFile = result.jsonPath;
+    else if (bindingFile === otherRepoBindings) archiveOtherRepoFile = result.jsonPath;
     else if (bindingFile === activityBindings) activityFile = result.jsonPath;
     else if (redact) redactedFile = result.jsonPath;
     else if (epoch === 'v1') analysisFile = result.jsonPath;
@@ -277,7 +291,13 @@ describe('offline review persistence and export', () => {
 
   it.runIf(Boolean(testDatabaseUrl))('archives review history and restores an offline draft from PostgreSQL, then respects an imported revocation', async () => {
     vi.stubEnv('DATABASE_URL', testDatabaseUrl!);
+    const api = await buildApp(loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', DATABASE_URL: testDatabaseUrl! }));
     try {
+      const http = api.getHttpAdapter().getInstance();
+      const base = `/v1/owners/${archiveOwnerId}/repositories/repo/work-items`;
+      const sentenceQuery = '?claim=problem-1&claim=implementation-1&claim=user-result&claim=contribution-1';
+      expect((await http.inject({ method: 'GET', url: '/ready' })).json()).toEqual({
+        status: 'ready', capabilities: { archiveRead: true, asyncAnalysis: false } });
       const storeDirectory = store();
       await review(storeDirectory, undefined, ['--analysis', archiveFile]);
       const approved = await review(storeDirectory, approvals, ['--analysis', archiveFile]);
@@ -286,6 +306,29 @@ describe('offline review persistence and export', () => {
       expect(archived).toMatchObject({ revision: 2, insertedRevisions: 2, version: approved.version, externalRequests: 0 });
       const repeated = await executeDbArchive(['--review', approved.jsonPath]);
       expect(repeated).toMatchObject({ insertedRevisions: 0, version: archived.version, externalRequests: 0 });
+      for (const file of [archiveSecondFile, archiveOtherOwnerFile, archiveOtherRepoFile]) {
+        const other = await review(store(), approvals, ['--analysis', file]);
+        await executeDbArchive(['--review', other.jsonPath]);
+      }
+      const list = await http.inject({ method: 'GET', url: `${base}?limit=1` });
+      expect(list.statusCode).toBe(200);
+      expect(list.headers['cache-control']).toBe('no-store');
+      expect(list.json()).toMatchObject({ items: [{ workItemId: 'work', revision: 2, reviewVersion: approved.version }], nextOffset: 1 });
+      expect(list.json().items).toHaveLength(1);
+      const next = await http.inject({ method: 'GET', url: `${base}?limit=1&offset=1` });
+      expect(next.json()).toMatchObject({ items: [{ workItemId: 'work-2', revision: 1 }], nextOffset: null });
+      expect(next.json().items).toHaveLength(1);
+      expect((await http.inject({ method: 'GET', url: `${base}?offset=2` })).json().items).toEqual([]);
+      for (const otherBase of [base.replace(archiveOwnerId, `${archiveOwnerId}-other`), base.replace('/repo/', '/repo-other/')]) {
+        const other = await http.inject({ method: 'GET', url: otherBase });
+        expect(other.json().items).toHaveLength(1);
+        expect(other.json().items[0]).toMatchObject({ workItemId: 'work', revision: 1 });
+        const detail = await http.inject({ method: 'GET', url: `${otherBase}/work` });
+        expect(detail.json().reviewVersion).not.toBe(approved.version);
+      }
+      expect((await http.inject({ method: 'GET', url: base.replace('/repo/', '/missing/') })).json().items).toEqual([]);
+      expect((await http.inject({ method: 'GET', url: `${base}/missing` })).statusCode).toBe(404);
+      expect((await http.inject({ method: 'GET', url: `${base.replace(archiveOwnerId, 'missing-owner')}/work` })).statusCode).toBe(404);
       const options = ['--owner', archiveOwnerId, '--repository', 'repo', '--work-item', 'work',
         '--claim', 'problem-1', '--claim', 'implementation-1', '--claim', 'user-result', '--claim', 'contribution-1'];
 
@@ -298,16 +341,31 @@ describe('offline review persistence and export', () => {
         const report = await json(restored.jsonPath);
         expect(report.trace[0].evidence[0].text).toContain('[REDACTED]');
         expect(JSON.stringify(report)).not.toContain('PRIVATE_SENTINEL');
+        const detail = await http.inject({ method: 'GET', url: `${base}/work` });
+        expect(detail.statusCode).toBe(200);
+        expect(detail.json()).toMatchObject({ reviewVersion: approved.version, reviewRevision: 2, review: report.review });
+        expect(detail.json().evidence.excerpts.length).toBeGreaterThan(0);
+        expect(detail.body).not.toContain('PRIVATE_SENTINEL');
+        const sentence = await http.inject({ method: 'GET', url: `${base}/work/resume${sentenceQuery}&reviewVersion=${approved.version}` });
+        expect(sentence.statusCode).toBe(200);
+        expect(sentence.headers['cache-control']).toBe('no-store');
+        expect(sentence.json()).toMatchObject({ version: local.version, bullet: report.bullet, trace: report.trace, externalRequests: 0 });
+        expect((await http.inject({ method: 'GET', url: `${base}/work/resume${sentenceQuery}&reviewVersion=${'f'.repeat(64)}` })).statusCode).toBe(409);
+        expect((await http.inject({ method: 'GET', url: `${base}/work/resume?claim=missing` })).statusCode).toBe(422);
       } finally { await rename(moved, archiveFile); }
 
-      await expect(executeResumeDb([...options, '--owner', `${archiveOwnerId}-other`, '--output', output()])).rejects.toThrow('not found');
+      await expect(executeResumeDb([...options, '--owner', `${archiveOwnerId}-missing`, '--output', output()])).rejects.toThrow('not found');
       const report = await json(approved.jsonPath);
       const confirmation = report.state.confirmations.find((item: { claimId: string }) => item.claimId === 'contribution-1');
       const revoked = await review(storeDirectory, [{ kind: 'revoke', confirmationId: confirmation.id }], ['--analysis', archiveFile]);
       expect(await executeDbArchive(['--review', revoked.jsonPath])).toMatchObject({ revision: 3, insertedRevisions: 1 });
+      const afterRevoke = await http.inject({ method: 'GET', url: `${base}/work` });
+      expect(afterRevoke.json()).toMatchObject({ reviewVersion: revoked.version, reviewRevision: 3 });
+      expect((await http.inject({ method: 'GET', url: `${base}/work/resume${sentenceQuery}` })).statusCode).toBe(422);
+      expect((await http.inject({ method: 'GET', url: `${base}/work/resume${sentenceQuery}&reviewVersion=${approved.version}` })).statusCode).toBe(409);
       await expect(executeDbArchive(['--review', approved.jsonPath])).rejects.toThrow('stale');
       await expect(executeResumeDb([...options, '--output', output()])).rejects.toThrow('unconfirmed');
-    } finally { vi.unstubAllEnvs(); }
+    } finally { await api.close(); vi.unstubAllEnvs(); }
   }, 30_000);
 
   it('revokes an old confirmation on edits and preserves edited drafts across changed analysis inputs', async () => {

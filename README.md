@@ -19,6 +19,7 @@ GitHub·Ncloud SourceCommit 등 Git 저장소의 활동을 근거로 기술적 �
 - [LLM 분석 어댑터](docs/llm-analysis.md): Claude 분석 호출, 전송 선택·마스킹, 전체 토큰 예산, 응답·사용량 검증.
 - [분석 CLI 사용법](docs/analysis-cli.md): 원본 연결 파일, 전송 미리보기, 분석 저장과 호출 없는 캐시 재사용.
 - [사용자 검토와 성과 문장](docs/review-resume-cli.md): 보충·편집·확인/철회, 재분석 시 편집 보존과 근거를 추적하는 문장 출력.
+- [로컬 검토 조회 API](docs/archive-api.md): PostgreSQL 작업 목록·최신 검토·성과 문장 조회와 철회 반영.
 - [구현 순서](docs/implementation-plan.md): 단계별 산출물과 완료 조건.
 - [다중 저장소 공급자 지원](docs/repository-providers.md): 공통 Git 수집, GitHub·SourceCommit 연결, 추적 가능 범위와 한계.
 - [프로젝트 구조와 개발 방법](docs/project-structure.md): 전체 디렉터리, 앱·패키지 책임, 의존성 방향, 기능 추가 규칙, 실행·검증·DB 관리와 구현 범위.

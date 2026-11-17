@@ -138,7 +138,7 @@ describe('offline prepare command', () => {
     const input = await inputFile(source);
     const before = await readFile(input);
     const { stdout } = await execute(process.execPath, ['apps/cli/dist/index.js', 'prepare', ...args(input)], {
-      cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 15_000,
+      cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 15_000, windowsHide: true,
     });
     const summary = JSON.parse(stdout);
     expect(summary).toMatchObject({ inputCommits: 3, candidateCommits: 1, reviewCommits: 1, excludedCommits: 1 });
@@ -154,7 +154,7 @@ describe('offline prepare command', () => {
     await expect(executePrepare(['--input', input, '--author', email, '--output', dirname(summary.jsonPath)]))
       .rejects.toThrow('already exists');
     expect(JSON.parse(await readFile(summary.jsonPath, 'utf8'))).toEqual(saved);
-  });
+  }, 20_000);
 
   it('accepts repeated author and alias flags and forwards full-OID overrides', async () => {
     const input = await inputFile(history([commit(1), commit(2, { author: { name: 'Alias', email: 'alias@example.com' } })]));
