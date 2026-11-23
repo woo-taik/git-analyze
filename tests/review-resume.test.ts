@@ -365,6 +365,45 @@ describe('offline review persistence and export', () => {
       expect((await http.inject({ method: 'GET', url: `${base}/work/resume${sentenceQuery}&reviewVersion=${approved.version}` })).statusCode).toBe(409);
       await expect(executeDbArchive(['--review', approved.jsonPath])).rejects.toThrow('stale');
       await expect(executeResumeDb([...options, '--output', output()])).rejects.toThrow('unconfirmed');
+
+      // API edits append to the same immutable history and immediately affect resume policy.
+      const reviewUrl = base + '/work/review';
+      const post = (expectedReviewVersion: string, actions: unknown[]) => http.inject({ method: 'POST', url: reviewUrl,
+        payload: { expectedReviewVersion, actor: 'web-user', changes: { schemaVersion: 1, actions } } });
+      const invalid = await post(revoked.version, [
+        { kind: 'edit', claimId: 'implementation-1', text: 'must roll back' },
+        { kind: 'confirm', claimId: 'missing', text: 'invalid' },
+      ]);
+      expect(invalid.statusCode).toBe(422);
+      expect((await http.inject({ method: 'GET', url: base + '/work' })).json().reviewVersion).toBe(revoked.version);
+      const reapproved = await post(revoked.version, [
+        confirm('contribution-1', report.state.analysis.contribution.find((claim: { id: string }) => claim.id === 'contribution-1').text),
+      ]);
+      expect(reapproved.statusCode).toBe(201);
+      expect(reapproved.json()).toMatchObject({ reviewRevision: 4, externalRequests: 0 });
+      expect(reapproved.json().review.events.at(-1).actor).toBe('web-user');
+      expect((await http.inject({ method: 'GET', url: base + '/work/resume' + sentenceQuery })).statusCode).toBe(200);
+      const confirmations = reapproved.json().review.confirmations;
+      const currentConfirmation = confirmations.find((item: { claimId: string; status: string }) =>
+        item.claimId === 'contribution-1' && item.status === 'confirmed');
+      const againRevoked = await post(reapproved.json().reviewVersion, [
+        { kind: 'revoke', confirmationId: currentConfirmation.id },
+      ]);
+      expect(againRevoked.statusCode).toBe(201);
+      expect((await http.inject({ method: 'GET', url: base + '/work/resume' + sentenceQuery })).statusCode).toBe(422);
+      const version = againRevoked.json().reviewVersion;
+      const concurrent = await Promise.all([
+        post(version, [{ kind: 'edit', claimId: 'implementation-1', text: 'first writer' }]),
+        post(version, [{ kind: 'edit', claimId: 'implementation-1', text: 'second writer' }]),
+      ]);
+      expect(concurrent.map(result => result.statusCode).sort()).toEqual([201, 409]);
+      const latest = (await http.inject({ method: 'GET', url: base + '/work' })).json();
+      expect(latest.reviewRevision).toBe(6);
+      expect(latest.review.analysis.implementation[0].status).toBe('inferred');
+      expect((await post(version, [{ kind: 'edit', claimId: 'implementation-1', text: 'stale' }])).statusCode).toBe(409);
+      expect((await http.inject({ method: 'GET', url: base + '/work/resume' + sentenceQuery + '&reviewVersion=' + version })).statusCode).toBe(409);
+      await expect(executeDbArchive(['--review', revoked.jsonPath])).rejects.toThrow('newer review');
+
     } finally { await api.close(); vi.unstubAllEnvs(); }
   }, 30_000);
 

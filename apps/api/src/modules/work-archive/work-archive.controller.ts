@@ -1,4 +1,5 @@
-import { BadRequestException, Controller, Get, Header, Inject, Param, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Header, Inject, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { parseReviewChanges } from '@git-analyze/core';
 import { WorkArchiveService } from './work-archive.service.js';
 import { LocalArchiveGuard } from './local-archive.guard.js';
 
@@ -55,5 +56,24 @@ export class WorkArchiveController {
       throw new BadRequestException('invalid_review_version');
     }
     return this.archive.resume({ ownerId: id(ownerId), repositoryId: id(repositoryId), workItemId: id(workItemId) }, claimIds, kind, expected);
+  }
+
+  @Post(':workItemId/review')
+  @Header('Cache-Control', 'no-store')
+  updateReview(@Param('ownerId') ownerId: string, @Param('repositoryId') repositoryId: string,
+    @Param('workItemId') workItemId: string, @Query() query: Record<string, unknown>, @Body() body: unknown) {
+    only(query, []);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestException('invalid_review_request');
+    const input = body as Record<string, unknown>;
+    only(input, ['expectedReviewVersion', 'actor', 'changes']);
+    if (typeof input.expectedReviewVersion !== 'string' || !/^[a-f0-9]{64}$/.test(input.expectedReviewVersion)) {
+      throw new BadRequestException('invalid_review_version');
+    }
+    const actor = id(input.actor);
+    let actions;
+    try { actions = parseReviewChanges(input.changes); }
+    catch { throw new BadRequestException('invalid_review_changes'); }
+    return this.archive.updateReview({ ownerId: id(ownerId), repositoryId: id(repositoryId), workItemId: id(workItemId) },
+      input.expectedReviewVersion, actions, actor);
   }
 }

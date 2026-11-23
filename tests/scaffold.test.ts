@@ -101,3 +101,25 @@ describe('scaffold boundaries', () => {
     expect(response.headers['cache-control']).toBe('no-store');
   });
 });
+
+describe('review write API boundaries', () => {
+  it('validates review batches and versions before database access and protects writes from foreign origins', async () => {
+    const app = await createApp();
+    const url = '/v1/owners/owner/repositories/repo/work-items/work/review';
+    const payload = { actor: 'local-user', expectedReviewVersion: 'a'.repeat(64),
+      changes: { schemaVersion: 1, actions: [{ kind: 'edit', claimId: 'implementation-1', text: 'Updated wording' }] } };
+    for (const invalid of [null, [], {}, { ...payload, actor: ' ' }, { ...payload, actor: 'x'.repeat(513) },
+      { ...payload, expectedReviewVersion: 'bad' }, { ...payload, recordedAt: 'client-time' },
+      { ...payload, changes: { schemaVersion: 1, actions: [] } },
+      { ...payload, changes: { schemaVersion: 1, actions: [{ kind: 'rebase' }] } }]) {
+      expect((await app.inject({ method: 'POST', url, payload: invalid })).statusCode).toBe(400);
+    }
+    expect((await app.inject({ method: 'POST', url: url + '?unexpected=true', payload })).statusCode).toBe(400);
+    const unavailable = await app.inject({ method: 'POST', url, payload });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.headers['cache-control']).toBe('no-store');
+    expect(unavailable.json().message).toBe('archive_database_not_configured');
+    expect((await app.inject({ method: 'POST', url, payload, headers: { origin: 'https://foreign.example' } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url, payload, remoteAddress: '203.0.113.5' })).statusCode).toBe(403);
+  });
+});

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { canonicalJson, validateReviewState, validateWorkItemAnalysis,
-  type EvidencePacket, type LlmUsage, type ReviewState, type WorkItemAnalysis } from '@git-analyze/core';
+import { applyReviewChanges, canonicalJson, validateReviewState, validateWorkItemAnalysis,
+  type EvidencePacket, type LlmUsage, type ReviewAction, type ReviewState, type WorkItemAnalysis } from '@git-analyze/core';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { createDatabase } from './index.js';
 import { owners, repositories, sourceRecords, workAnalysisVersions, workItems, workItemSources, workReviewVersions } from './schema.js';
@@ -165,18 +165,51 @@ export async function archiveWork(db: Database, scope: ArchiveScope, revisions: 
   });
 }
 
+async function readLockedReview(tx: Transaction, workId: string, scope: ArchiveScope) {
+  const [entry] = await tx.select({ version: workReviewVersions.version, revision: workReviewVersions.revision,
+    previousVersion: workReviewVersions.previousVersion, snapshotVersion: workReviewVersions.snapshotVersion,
+    review: workReviewVersions.payload, analysis: workAnalysisVersions.payload }).from(workReviewVersions)
+    .innerJoin(workAnalysisVersions, and(eq(workReviewVersions.workItemId, workAnalysisVersions.workItemId),
+      eq(workReviewVersions.snapshotVersion, workAnalysisVersions.snapshotVersion)))
+    .where(eq(workReviewVersions.workItemId, workId)).orderBy(desc(workReviewVersions.revision)).limit(1);
+  if (!entry || entry.revision !== entry.review.revision || entry.previousVersion !== entry.review.previousVersion
+    || entry.snapshotVersion !== hash(entry.analysis)) throw new Error('Archived review or analysis is invalid');
+  return { entry, current: validateRevision(scope, entry) };
+}
+
 export async function withArchivedReview<T>(db: Database, scope: ArchiveScope,
   operation: (current: ArchivedReviewSnapshot) => Promise<T>) {
   return db.transaction(async (tx) => {
     const work = await lockWork(tx, scope);
-    const [entry] = await tx.select({ version: workReviewVersions.version, revision: workReviewVersions.revision,
-      previousVersion: workReviewVersions.previousVersion, snapshotVersion: workReviewVersions.snapshotVersion,
-      review: workReviewVersions.payload, analysis: workAnalysisVersions.payload }).from(workReviewVersions)
-      .innerJoin(workAnalysisVersions, and(eq(workReviewVersions.workItemId, workAnalysisVersions.workItemId),
-        eq(workReviewVersions.snapshotVersion, workAnalysisVersions.snapshotVersion)))
-      .where(eq(workReviewVersions.workItemId, work.id)).orderBy(desc(workReviewVersions.revision)).limit(1);
-    if (!entry || entry.revision !== entry.review.revision || entry.previousVersion !== entry.review.previousVersion
-      || entry.snapshotVersion !== hash(entry.analysis)) throw new Error('Archived review or analysis is invalid');
-    return operation(validateRevision(scope, entry));
+    return operation((await readLockedReview(tx, work.id, scope)).current);
+  });
+}
+
+export class ArchiveReviewConflictError extends Error {
+  constructor() { super('Review version changed'); this.name = 'ArchiveReviewConflictError'; }
+}
+export class ArchiveReviewChangesError extends Error {
+  constructor() { super('Review changes rejected'); this.name = 'ArchiveReviewChangesError'; }
+}
+
+/** Append under the same work lock as archive imports and resume generation. */
+export async function updateArchivedReview(db: Database, scope: ArchiveScope, expectedVersion: string,
+  actions: readonly ReviewAction[], actor: string) {
+  return db.transaction(async tx => {
+    const work = await lockWork(tx, scope);
+    const { entry, current } = await readLockedReview(tx, work.id, scope);
+    if (current.version !== expectedVersion) throw new ArchiveReviewConflictError();
+    let state: ReviewState;
+    try {
+      state = applyReviewChanges(current.stored.state, actions, current.context,
+        { actor, recordedAt: new Date().toISOString() });
+    } catch { throw new ArchiveReviewChangesError(); }
+    const review: ArchivedReview = { ...entry.review, revision: entry.review.revision + 1,
+      previousVersion: current.version, state };
+    const version = hash(review);
+    const next = validateRevision(scope, { version, review, analysis: entry.analysis });
+    await tx.insert(workReviewVersions).values({ workItemId: work.id, revision: review.revision,
+      version, previousVersion: review.previousVersion, snapshotVersion: entry.snapshotVersion, payload: review });
+    return next;
   });
 }

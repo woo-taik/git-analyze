@@ -4,6 +4,8 @@ import { analysisJobs, ArchiveNotFoundError, createDatabase, listArchivedWorks, 
 import { ConflictException, HttpException, Inject, Injectable, NotFoundException,
   ServiceUnavailableException, UnprocessableEntityException, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
+import type { ReviewAction } from '@git-analyze/core';
+import { updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError } from '@git-analyze/database';
 
 export const ARCHIVE_CONFIG = Symbol('ARCHIVE_CONFIG');
 
@@ -23,6 +25,8 @@ export class WorkArchiveService implements OnModuleDestroy {
     try { return await operation(this.database.db); }
     catch (error) {
       if (error instanceof ArchiveNotFoundError) throw new NotFoundException('archived_work_not_found');
+      if (error instanceof ArchiveReviewConflictError) throw new ConflictException('review_version_changed');
+      if (error instanceof ArchiveReviewChangesError) throw new UnprocessableEntityException('review_changes_rejected');
       if (error instanceof ResumeOutputError) throw new UnprocessableEntityException(error.code);
       if (error instanceof HttpException) throw error;
       // Do not expose SQL parameters, connection credentials, or corrupted archived content.
@@ -51,6 +55,15 @@ export class WorkArchiveService implements OnModuleDestroy {
       analysisVersion: current.context.analysisVersion, review: current.stored.state,
       evidence: current.context.packet, source: current.saved.source,
     })));
+  }
+
+  updateReview(scope: ArchiveScope, expectedVersion: string, actions: readonly ReviewAction[], actor: string) {
+    return this.query(async db => {
+      const current = await updateArchivedReview(db, scope, expectedVersion, actions, actor);
+      return { scope, reviewVersion: current.version, reviewRevision: current.stored.revision,
+        analysisVersion: current.context.analysisVersion, review: current.stored.state,
+        evidence: current.context.packet, source: current.saved.source, externalRequests: 0 };
+    });
   }
 
   resume(scope: ArchiveScope, claimIds: readonly string[], kind: 'achievement' | 'activity', expectedVersion?: string) {

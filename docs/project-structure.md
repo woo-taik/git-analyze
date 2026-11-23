@@ -105,7 +105,7 @@ compose.yaml                     로컬 PostgreSQL
 
 [index.ts](../apps/api/src/index.ts)가 설정을 읽고 [app.ts](../apps/api/src/app.ts)로 앱을 생성한 뒤 포트를 연다. [AppModule](../apps/api/src/app.module.ts)은 `HealthModule`, `RepositoriesModule`, 설정을 전달받는 `WorkArchiveModule`을 조립한다. 검토 API의 DB pool은 앱 종료 시 닫는다.
 
-HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. `RepositoryCatalogService`는 공급자 카탈로그를, `WorkArchiveService`는 PostgreSQL의 검토 목록·상세·문장을 반환한다. 문장 정책과 근거 추적은 CLI와 core에서 공유한다. 수집 작업 접수·저장소 등록·사용자 인증은 아직 없다.
+HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. `RepositoryCatalogService`는 공급자 카탈로그를, `WorkArchiveService`는 PostgreSQL의 검토 목록·상세·문장을 반환한다. 문장 정책과 근거 추적은 CLI와 core에서 공유한다. POST work-items/:workItemId/review는 최신 버전을 확인하고 core의 사용자 검토 행동을 적용해 새 DB 검토 버전을 추가한다. 잘못된 배치는 전체 취소하고 동시 수정은 409로 거부한다. 수집 작업 접수·저장소 등록·사용자 인증은 아직 없다.
 
 현재 경로:
 
