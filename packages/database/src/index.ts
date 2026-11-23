@@ -1,6 +1,8 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from './schema.js';
+export { AnalysisJobStore } from './analysis-jobs.js';
+export type { AnalysisJobScope, AnalysisJobRow } from './analysis-jobs.js';
 
 export * from './schema.js';
 export { archiveWork, withArchivedReview, listArchivedWorks, ArchiveNotFoundError } from './work-archive.js';

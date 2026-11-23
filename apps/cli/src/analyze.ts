@@ -1,9 +1,10 @@
+import { executeAnalysis } from '@git-analyze/providers';
 import { mkdir, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ClaudeAnalysisError, ClaudeAnalysisProvider, OpenAiAnalysisError, OpenAiAnalysisProvider } from '@git-analyze/providers';
+import { ClaudeAnalysisError, OpenAiAnalysisError } from '@git-analyze/providers';
 import { generationRequest, prepareAnalysisRequest } from './analysis-runtime.js';
-import { analysisCacheKey, loadAnalysisCache, storeAnalysisCache, validateAnalysisResult, type AnalysisSettings } from './analysis-cache.js';
+import { analysisCacheKey, loadAnalysisCache, storeAnalysisCache, type AnalysisSettings } from './analysis-cache.js';
 import { identity, loadAnalysisInput, readBoundedJson } from './analysis-input.js';
 import { analysisSourceLines, renderAnalysisMarkdown, renderPreviewMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
 
@@ -78,12 +79,7 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
     let cacheStored = false;
     if (!result) {
       try {
-        const Provider = settings.provider === 'claude' ? ClaudeAnalysisProvider : OpenAiAnalysisProvider;
-        const provider = new Provider({ apiKey: apiKey!, model: settings.model,
-          contextWindowTokens: settings.contextWindowTokens, timeoutMs: settings.timeoutMs },
-        dependencies.fetch ? { fetch: dependencies.fetch } : {});
-        result = validateAnalysisResult(await provider.analyze(loaded.packet, { maxInputTokens: settings.maxInputTokens,
-          maxOutputTokens: settings.maxOutputTokens, transmission }), prepared, settings);
+        result = await executeAnalysis(loaded.packet, settings, transmission, apiKey!, dependencies.fetch);
       } catch (error) {
         const failure = { schemaVersion: 1, status: 'failed', createdAt: new Date().toISOString(), source: loaded.source,
           settings, cacheKey: key, transmission: prepared.receipt, error: error instanceof OpenAiAnalysisError || error instanceof ClaudeAnalysisError

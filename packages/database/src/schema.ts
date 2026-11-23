@@ -8,6 +8,20 @@ import type { ArchivedAnalysis, ArchivedReview } from './work-archive.js';
 export const repositoryProvider = pgEnum('repository_provider', REPOSITORY_PROVIDERS);
 export const sourceKind = pgEnum('source_kind', SOURCE_KINDS);
 
+export const analysisJobs = pgTable('analysis_jobs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  ownerId: text('owner_id').notNull(), repositoryId: text('repository_id').notNull(), workItemId: text('work_item_id').notNull(),
+  requestKey: text('request_key').notNull(), request: jsonb('request').notNull(),
+  status: text('status').notNull().default('queued'), result: jsonb('result'), error: jsonb('error'),
+  leaseToken: uuid('lease_token'), leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique('analysis_jobs_request_unique').on(t.ownerId, t.repositoryId, t.workItemId, t.requestKey),
+  index('analysis_jobs_dispatch_idx').on(t.status, t.createdAt),
+  check('analysis_jobs_status_check', sql`${t.status} IN ('queued', 'running', 'succeeded', 'failed', 'needs_input')`),
+]);
+
 export const owners = pgTable('owners', {
   id: uuid('id').defaultRandom().primaryKey(),
   externalId: text('external_id').unique(),

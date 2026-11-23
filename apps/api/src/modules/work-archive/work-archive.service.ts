@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson, composeResumeWithTrace, RESUME_POLICY_VERSION, ResumeOutputError } from '@git-analyze/core';
-import { ArchiveNotFoundError, createDatabase, listArchivedWorks, withArchivedReview, workAnalysisVersions, workReviewVersions, type ArchiveScope } from '@git-analyze/database';
+import { analysisJobs, ArchiveNotFoundError, createDatabase, listArchivedWorks, withArchivedReview, workAnalysisVersions, workReviewVersions, type ArchiveScope } from '@git-analyze/database';
 import { ConflictException, HttpException, Inject, Injectable, NotFoundException,
   ServiceUnavailableException, UnprocessableEntityException, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
@@ -36,8 +36,9 @@ export class WorkArchiveService implements OnModuleDestroy {
       // Check the tables/columns used by detail as well, without loading private payloads.
       await db.select().from(workAnalysisVersions).limit(0);
       await db.select().from(workReviewVersions).limit(0);
+      await db.select().from(analysisJobs).limit(0);
     });
-    return { status: 'ready', capabilities: { archiveRead: true, asyncAnalysis: false } };
+    return { status: 'ready', capabilities: { archiveRead: true, asyncAnalysis: true } };
   }
 
   list(scope: Pick<ArchiveScope, 'ownerId' | 'repositoryId'>, page: { limit: number; offset: number }) {

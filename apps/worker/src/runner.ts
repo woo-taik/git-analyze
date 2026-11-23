@@ -31,12 +31,14 @@ export async function startWorker(options: {
     for (const name of registered) {
       const handler = options.handlers[name];
       if (!handler) continue;
-      await boss.createQueue(name);
+      await boss.createQueue(name, { policy: 'exclusive' });
       await boss.work<unknown>(name, async (jobs) => {
         for (const job of jobs) await handler(parsePayload(job.data));
       });
     }
-    return { stop: () => boss.stop() };
+    return { stop: () => boss.stop(),
+      enqueue: (name: JobName, payload: JobPayload) => boss.send(name, payload,
+        { singletonKey: `${payload.ownerId}:${payload.repositoryId}:${payload.targetId}`, retryLimit: 2, retryDelay: 5, expireInSeconds: 240 }) };
   } catch (error) {
     await boss.stop().catch(() => undefined);
     throw error;

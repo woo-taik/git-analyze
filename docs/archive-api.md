@@ -13,7 +13,7 @@ pnpm dev:api
 
 기본 주소는 `http://127.0.0.1:3000`이다. DB가 설정된 API는 loopback HOST만 허용하며 검토 조회는 로컬 연결과 loopback Host를 검사한다. 다른 사이트의 Origin 요청은 거부한다. owner ID는 로컬 데이터 선택 조건이며 사용자 인증이 아니다. 다중 사용자 공개 서비스에는 인증·인가가 추가로 필요하다.
 
-`GET /health`는 DB와 관계없이 생존 상태를 반환한다. `GET /ready`는 DB의 조회 가능 상태를 검사해 성공 시 `status: "ready"`, `capabilities: { archiveRead: true, asyncAnalysis: false }`를 반환한다. DB 미설정·접속 실패·스키마 누락은 503이다. 준비 상태는 검토 조회에 해당하며 분석 워커는 후속이다.
+`GET /health`는 DB와 관계없이 생존 상태를 반환한다. `GET /ready`는 DB의 조회 가능 상태를 검사해 성공 시 `status: "ready"`, `capabilities: { archiveRead: true, asyncAnalysis: true }`를 반환한다. DB 미설정·접속 실패·스키마 누락은 503이다. 준비 상태는 검토 조회와 분석 접수 테이블을 검사한다. 워커 실행 여부나 공급자 연결 성공을 의미하지 않는다.
 
 ## 조회
 

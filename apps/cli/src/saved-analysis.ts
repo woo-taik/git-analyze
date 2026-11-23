@@ -25,7 +25,8 @@ export async function loadSavedAnalysis(path: string) {
   if (report.schemaVersion !== 1 || report.status !== 'analyzed') throw new Error('Expected a successful analysis report');
   const source = object(report.source);
   if (typeof source.inputFile !== 'string') throw new Error('Missing original evidence file');
-  const loaded = await parseAnalysisInput(await readBoundedJson(source.inputFile, 32 * 1024 * 1024), report.bindings, source.inputFile);
+  const evidence = report.evidence ?? await readBoundedJson(source.inputFile, 32 * 1024 * 1024);
+  const loaded = await parseAnalysisInput(evidence, report.bindings, source.inputFile);
   if (canonicalJson(source) !== canonicalJson(loaded.source)) throw new Error('Saved analysis source does not match original evidence');
   const rawSettings = object(report.settings);
   if (rawSettings.provider !== undefined && !['claude', 'openai'].includes(String(rawSettings.provider))) throw new Error('Invalid saved provider');

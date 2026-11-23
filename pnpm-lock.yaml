@@ -95,6 +95,12 @@ importers:
       '@git-analyze/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@git-analyze/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@git-analyze/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@nestjs/common':
         specifier: 12.2.0
         version: 12.2.0(reflect-metadata@0.2.2)(rxjs@7.8.2)

@@ -297,7 +297,7 @@ describe('offline review persistence and export', () => {
       const base = `/v1/owners/${archiveOwnerId}/repositories/repo/work-items`;
       const sentenceQuery = '?claim=problem-1&claim=implementation-1&claim=user-result&claim=contribution-1';
       expect((await http.inject({ method: 'GET', url: '/ready' })).json()).toEqual({
-        status: 'ready', capabilities: { archiveRead: true, asyncAnalysis: false } });
+        status: 'ready', capabilities: { archiveRead: true, asyncAnalysis: true } });
       const storeDirectory = store();
       await review(storeDirectory, undefined, ['--analysis', archiveFile]);
       const approved = await review(storeDirectory, approvals, ['--analysis', archiveFile]);

@@ -10,3 +10,9 @@ export type { AnalysisTransmissionReceipt } from './llm/transmission.js';
 export { ClaudeAnalysisProvider, ClaudeAnalysisError, prepareClaudeAnalysisRequest,
   CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION } from './llm/claude-analysis.js';
 export type { ClaudeAnalysisResult } from './llm/claude-analysis.js';
+
+export * from './llm/analysis-input.js';
+export * from './llm/analysis-contract.js';
+export * from './llm/analysis-runtime.js';
+export * from './llm/analysis-execution.js';
+export * from './llm/analysis-submission.js';

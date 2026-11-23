@@ -145,7 +145,7 @@ HTTP 요청은 컨트롤러에서 받고 필요한 서비스를 호출한다. `R
 
 [WorkerModule](../apps/worker/src/worker.module.ts)이 [WorkerService](../apps/worker/src/worker.service.ts)를 구성한다. 서비스가 핸들러를 조립하고 [runner.ts](../apps/worker/src/runner.ts)가 pg-boss의 시작·큐 등록·payload 구조 검증을 담당한다. 종료 시 Nest 수명 주기로 큐를 정리한다.
 
-계획된 작업 이름은 `sync_repository`, `refresh_work_item`, `analyze_work_item`, `generate_resume`다. 현재 실제 업무 핸들러는 없으며 일반 시작은 실패한다. `worker:check`는 설정과 예정된 큐만 출력한다. 빈 핸들러로 작업을 성공 처리하지 않는다.
+계획된 작업 이름은 `sync_repository`, `refresh_work_item`, `analyze_work_item`, `generate_resume`다. analyze_work_item 핸들러를 연결했다. worker:check는 설정과 등록된 핸들러를 표시하며 DB 접속을 검사하지 않는다. 빈 핸들러로 작업을 성공 처리하지 않는다.
 
 ## 4. 공통 패키지의 역할
 
@@ -332,7 +332,7 @@ Compose의 고정 자격 증명과 localhost 바인딩은 로컬 개발용이다
 
 추가 완료: 사용자 보충·편집·확인/철회·완료 판단의 로컬 버전 저장, 재분석 편집 초안 보존, 최신 검토 버전 기반 한 작업의 성과/활동 문장과 절별 근거 추적.
 
-`resume-period`는 한 저장소에서 명시적으로 선택한 여러 최신 검토를 기간별 Markdown과 JSON으로 출력한다. `db-archive`는 작업의 원본 커밋·분석·검토 버전을 PostgreSQL에 저장하고 `resume-db`는 저장된 최신 검토에서 단일 작업의 문장과 근거를 출력한다. 로컬 검토 조회 API는 DB 작업 목록·최신 검토·성과 문장을 제공한다. 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·비동기 분석 API/워커·검토 UI는 후속이다. 실제 Claude로 law 표본 3건을 재검증했고 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
+`resume-period`는 한 저장소에서 명시적으로 선택한 여러 최신 검토를 기간별 Markdown과 JSON으로 출력한다. `db-archive`는 작업의 원본 커밋·분석·검토 버전을 PostgreSQL에 저장하고 `resume-db`는 저장된 최신 검토에서 단일 작업의 문장과 근거를 출력한다. 로컬 검토 조회 API는 DB 작업 목록·최신 검토·성과 문장을 제공한다. 원격 Git 동기화·GitHub API·SourceCommit 인증 연결·검토 UI는 후속이다. 비동기 분석 API/워커는 [분석 작업 API](async-analysis.md)를 따른다. 실제 Claude로 law 표본 3건을 재검증했고 실제 기여 범위·문제 해결·업무 완료의 의미적 사실성은 사용자가 확인한다.
 
 ## 10. 관련 문서
 
