@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { applyReviewChanges, canonicalJson, validateReviewState, validateWorkItemAnalysis,
+import { applyReviewChanges, canonicalJson, createReviewState, validateReviewState, validateWorkItemAnalysis,
   type EvidencePacket, type LlmUsage, type ReviewAction, type ReviewState, type WorkItemAnalysis } from '@git-analyze/core';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { createDatabase } from './index.js';
@@ -118,6 +118,26 @@ async function linkSources(tx: Transaction, work: Awaited<ReturnType<typeof lock
   }
 }
 
+async function ensureLockedWork(tx: Transaction, scope: ArchiveScope, analysis: ArchivedAnalysis) {
+  await tx.insert(owners).values({ externalId: scope.ownerId, label: scope.ownerId }).onConflictDoNothing();
+  const [owner] = await tx.select({ id: owners.id }).from(owners).where(eq(owners.externalId, scope.ownerId));
+  if (!owner) throw new Error('Could not resolve archive owner');
+  await tx.insert(repositories).values({ ownerId: owner.id, provider: 'local', instance: localInstance,
+    externalId: scope.repositoryId, label: scope.repositoryId, location: analysis.source.repositoryPath }).onConflictDoNothing();
+  const [repository] = await tx.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.ownerId, owner.id),
+    eq(repositories.provider, 'local'), eq(repositories.instance, localInstance), eq(repositories.externalId, scope.repositoryId)));
+  if (!repository) throw new Error('Could not resolve archive repository');
+  await tx.insert(workItems).values({ ownerId: owner.id, repositoryId: repository.id, externalId: scope.workItemId,
+    title: analysis.packet.provenance.local.selection.title }).onConflictDoNothing();
+  return lockWork(tx, scope);
+}
+
+async function storeAnalysis(tx: Transaction, work: Awaited<ReturnType<typeof lockWork>>,
+  snapshotVersion: string, analysis: ArchivedAnalysis) {
+  await linkSources(tx, work, analysis.packet);
+  await tx.insert(workAnalysisVersions).values({ workItemId: work.id, snapshotVersion, payload: analysis });
+}
+
 /** Store an entire validated chain, or leave the database at its previous revision. */
 export async function archiveWork(db: Database, scope: ArchiveScope, revisions: readonly WorkArchiveRevision[]) {
   const latest = revisions.at(-1);
@@ -131,17 +151,7 @@ export async function archiveWork(db: Database, scope: ArchiveScope, revisions: 
   });
 
   return db.transaction(async (tx) => {
-    await tx.insert(owners).values({ externalId: scope.ownerId, label: scope.ownerId }).onConflictDoNothing();
-    const [owner] = await tx.select({ id: owners.id }).from(owners).where(eq(owners.externalId, scope.ownerId));
-    if (!owner) throw new Error('Could not resolve archive owner');
-    await tx.insert(repositories).values({ ownerId: owner.id, provider: 'local', instance: localInstance,
-      externalId: scope.repositoryId, label: scope.repositoryId, location: latest.analysis.source.repositoryPath }).onConflictDoNothing();
-    const [repository] = await tx.select({ id: repositories.id }).from(repositories).where(and(eq(repositories.ownerId, owner.id),
-      eq(repositories.provider, 'local'), eq(repositories.instance, localInstance), eq(repositories.externalId, scope.repositoryId)));
-    if (!repository) throw new Error('Could not resolve archive repository');
-    await tx.insert(workItems).values({ ownerId: owner.id, repositoryId: repository.id, externalId: scope.workItemId,
-      title: latest.analysis.packet.provenance.local.selection.title }).onConflictDoNothing();
-    const work = await lockWork(tx, scope);
+    const work = await ensureLockedWork(tx, scope, latest.analysis);
     const existing = await tx.select({ revision: workReviewVersions.revision, version: workReviewVersions.version,
       snapshotVersion: workReviewVersions.snapshotVersion }).from(workReviewVersions).where(eq(workReviewVersions.workItemId, work.id))
       .orderBy(asc(workReviewVersions.revision));
@@ -154,8 +164,7 @@ export async function archiveWork(db: Database, scope: ArchiveScope, revisions: 
       if (index < existing.length) continue;
       const snapshotVersion = versions[index]!;
       if (!known.has(snapshotVersion)) {
-        await linkSources(tx, work, entry.analysis.packet);
-        await tx.insert(workAnalysisVersions).values({ workItemId: work.id, snapshotVersion, payload: entry.analysis });
+        await storeAnalysis(tx, work, snapshotVersion, entry.analysis);
         known.add(snapshotVersion);
       }
       await tx.insert(workReviewVersions).values({ workItemId: work.id, revision: entry.review.revision, version: entry.version,
@@ -165,16 +174,50 @@ export async function archiveWork(db: Database, scope: ArchiveScope, revisions: 
   });
 }
 
-async function readLockedReview(tx: Transaction, workId: string, scope: ArchiveScope) {
+async function findLockedReview(tx: Transaction, workId: string, scope: ArchiveScope) {
   const [entry] = await tx.select({ version: workReviewVersions.version, revision: workReviewVersions.revision,
     previousVersion: workReviewVersions.previousVersion, snapshotVersion: workReviewVersions.snapshotVersion,
     review: workReviewVersions.payload, analysis: workAnalysisVersions.payload }).from(workReviewVersions)
     .innerJoin(workAnalysisVersions, and(eq(workReviewVersions.workItemId, workAnalysisVersions.workItemId),
       eq(workReviewVersions.snapshotVersion, workAnalysisVersions.snapshotVersion)))
     .where(eq(workReviewVersions.workItemId, workId)).orderBy(desc(workReviewVersions.revision)).limit(1);
-  if (!entry || entry.revision !== entry.review.revision || entry.previousVersion !== entry.review.previousVersion
+  if (!entry) return undefined;
+  if (entry.revision !== entry.review.revision || entry.previousVersion !== entry.review.previousVersion
     || entry.snapshotVersion !== hash(entry.analysis)) throw new Error('Archived review or analysis is invalid');
   return { entry, current: validateRevision(scope, entry) };
+}
+
+async function readLockedReview(tx: Transaction, workId: string, scope: ArchiveScope) {
+  const review = await findLockedReview(tx, workId, scope);
+  if (!review) throw new ArchiveNotFoundError();
+  return review;
+}
+
+export class ArchiveReviewExistsError extends Error {
+  constructor() { super('Work item already has a review from another analysis'); }
+}
+
+export async function startJobReview(db: Database, scope: ArchiveScope, jobId: string, analysis: ArchivedAnalysis) {
+  // API-created reviews use a stable job identifier in place of the CLI analysis file path.
+  const analysisFile = `analysis-job:${jobId}`;
+  const review: ArchivedReview = { schemaVersion: 1, revision: 1, previousVersion: null, analysisFile,
+    analysisVersion: analysis.analysisVersion, state: createReviewState(analysis) };
+  const version = hash(review);
+  const initial = validateRevision(scope, { version, review, analysis });
+  const snapshotVersion = hash(analysis);
+  return db.transaction(async tx => {
+    const work = await ensureLockedWork(tx, scope, analysis);
+    const existing = await findLockedReview(tx, work.id, scope);
+    if (existing) {
+      if (existing.entry.review.analysisFile !== analysisFile) throw new ArchiveReviewExistsError();
+      if (existing.entry.snapshotVersion !== snapshotVersion) throw new Error('Analysis job snapshot changed');
+      return existing.current;
+    }
+    await storeAnalysis(tx, work, snapshotVersion, analysis);
+    await tx.insert(workReviewVersions).values({ workItemId: work.id, revision: 1, previousVersion: null,
+      version, snapshotVersion, payload: review });
+    return initial;
+  });
 }
 
 export async function withArchivedReview<T>(db: Database, scope: ArchiveScope,

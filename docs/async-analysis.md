@@ -23,7 +23,8 @@ CLI 파일 캐시와 DB 작업 캐시는 저장소가 다르므로 서로 자동
 
 ## 조회와 결과
 GET <공통 경로>/:jobId는 queued, running, succeeded, failed, needs_input과 result/error를 반환한다.
-성공 응답의 result를 analysis.json으로 저장하면 기존 pnpm cli review --analysis <파일> 명령으로 검토할 수 있다.
+성공한 작업은 본문 없이 `POST <공통 경로>/:jobId/review`로 DB에서 검토를 시작한다. 같은 요청을 반복하면 최신 검토를 반환한다. [검토 시작과 편집](archive-api.md#분석-작업에서-검토-시작)을 따른다.
+CLI를 사용할 때는 성공 응답의 result를 analysis.json으로 저장하면 기존 pnpm cli review --analysis <파일> 명령으로 검토할 수 있다.
 근거 원문을 결과에 포함하므로 원래 evidence 파일 경로가 없어도 검증할 수 있다.
 원본·마스킹 값이 DB 요청 스냅샷에 보관된다. API 키는 요청에 넣지 않고 워커 환경으로만 제공한다.
 

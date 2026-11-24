@@ -1,6 +1,7 @@
 import { object, parseAnalysisInput } from './analysis-input.js';
 import { parseAnalysisSettings } from './analysis-execution.js';
-import { analysisCacheKey } from './analysis-contract.js';
+import { canonicalJson } from '@git-analyze/core';
+import { analysisCacheKey, hash, validateAnalysisResult } from './analysis-contract.js';
 import { prepareAnalysisRequest, generationRequest, providerMetadata } from './analysis-runtime.js';
 import { PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION } from './claude-analysis.js';
 
@@ -31,4 +32,24 @@ export async function prepareAnalysisSubmission(value: unknown, savedRequestKey?
       promptVersion: providerMetadata(prepared).promptVersion },
     preview: { cacheKey: key, transmission: prepared.receipt, countRequest: prepared.body,
       analysisRequest: generationRequest(prepared, settings), externalRequests: 0 } };
+}
+
+/** Restore the worker's result from its approved DB request, including the exact masking and prompt version. */
+export async function restoreJobAnalysis(request: unknown, key: string, reportValue: unknown) {
+  const { prepared, loaded, settings, snapshot } = await prepareAnalysisSubmission(request, key);
+  const report = object(reportValue);
+  if (report.schemaVersion !== 1 || report.status !== 'analyzed' || object(report.cache).key !== key
+    || canonicalJson(report.source) !== canonicalJson(loaded.source)
+    || canonicalJson(report.bindings) !== canonicalJson(loaded.bindings)
+    || canonicalJson(report.evidence) !== canonicalJson(snapshot.evidence)
+    || canonicalJson(report.settings) !== canonicalJson(settings)
+    || canonicalJson(report.transmission) !== canonicalJson(prepared.receipt)
+    || canonicalJson(report.sentInput) !== prepared.input) throw new Error('Stored analysis report does not match the approved request');
+  const result = validateAnalysisResult(report.result, prepared, settings);
+  const packet = prepared.validationPacket;
+  const analysisVersion = hash({ ownerId: packet.ownerId, repositoryId: packet.repositoryId,
+    workItemId: packet.workItemId, inputVersion: packet.version, analysis: result.value });
+  const { promptVersion, wireSchemaVersion, requestedModel } = result.request;
+  return { analysisVersion, packet, analysis: result.value, usage: result.usage,
+    source: loaded.source, request: { promptVersion, wireSchemaVersion, requestedModel } };
 }

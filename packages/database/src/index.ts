@@ -6,7 +6,7 @@ export type { AnalysisJobScope, AnalysisJobRow } from './analysis-jobs.js';
 
 export * from './schema.js';
 export { archiveWork, withArchivedReview, listArchivedWorks, ArchiveNotFoundError } from './work-archive.js';
-export { updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError } from './work-archive.js';
+export { startJobReview, updateArchivedReview, ArchiveReviewExistsError, ArchiveReviewConflictError, ArchiveReviewChangesError } from './work-archive.js';
 export type { ArchiveScope, ArchivedAnalysis, ArchivedReview, WorkArchiveRevision,
   ArchivedReviewSnapshot, ArchivedWorkSummary } from './work-archive.js';
 

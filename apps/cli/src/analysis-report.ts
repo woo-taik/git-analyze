@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { ANALYSIS_CLAIM_FIELDS, type Claim, type WorkItemAnalysis } from '@git-analyze/core';
-import { CLAUDE_ANALYSIS_PROMPT_VERSION } from '@git-analyze/providers';
+import { CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_IMPACT_PROMPT_VERSION } from '@git-analyze/providers';
 import type { prepareOpenAiAnalysisRequest } from '@git-analyze/providers';
 import { escapeMarkdownText as text } from './history-report.js';
 import type { loadAnalysisInput } from './analysis-input.js';
@@ -50,12 +50,21 @@ const labels: Record<(typeof ANALYSIS_CLAIM_FIELDS)[number], string> = { problem
   alternatives: '대안', decision: '선택과 이유', implementation: '구현', results: '결과', verification: '검증', contribution: '기여' };
 const supported = (claim: Claim) => claim.status === 'source_supported' || claim.status === 'user_confirmed';
 
-export function analysisImpactSummary(value: WorkItemAnalysis, promptVersion?: string): string | null {
-  if (promptVersion !== CLAUDE_ANALYSIS_PROMPT_VERSION) return null;
+export function analysisImpactSummary(value: WorkItemAnalysis): string | null {
   const effect = value.results.find(claim => claim.id === 'metric-1' && supported(claim))
     ?? value.results.find(claim => claim.id === 'effect-1' && supported(claim))
     ?? value.results.find(supported);
   return effect?.text.trim().replace(/\s+/g, ' ') ?? null;
+}
+
+function compactReport(value: WorkItemAnalysis, impact: string | null): string {
+  const decision = value.decision.find(claim => claim.id === 'decision-1' && supported(claim)) ?? value.decision.find(supported);
+  const claims = [decision, value.implementation.find(supported), value.problem.find(supported)]
+    .map(claim => claim?.text.trim().replace(/\s+/gu, ' '));
+  const headline = impact ?? claims.find(Boolean);
+  if (!headline) return '- 근거로 확인된 변경이나 효과가 없습니다.\n';
+  const detail = impact ? claims.find(line => line && line !== headline) : undefined;
+  return `- **${text(headline)}**\n` + (detail ? `- ${text(detail)}\n` : '');
 }
 
 function reportSections(value: WorkItemAnalysis, impactFormat: boolean): [string, readonly Claim[]][] {
@@ -76,8 +85,10 @@ function reportSections(value: WorkItemAnalysis, impactFormat: boolean): [string
 
 export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, cacheHit: boolean, complete: boolean,
   reviewed = false, promptVersion?: string): string {
-  const impactFormat = promptVersion === CLAUDE_ANALYSIS_PROMPT_VERSION;
-  const impact = analysisImpactSummary(value, promptVersion);
+  const impact = analysisImpactSummary(value);
+  if (!reviewed) return compactReport(value, impact);
+  const impactFormat = promptVersion === CLAUDE_ANALYSIS_PROMPT_VERSION || promptVersion === CLAUDE_IMPACT_PROMPT_VERSION
+    || promptVersion === 'claude-analysis-prompt-v4';
   const lines = ['# 작업 분석 초안', '',
     ...(impactFormat ? [`> **효과 한 줄** — ${impact ? text(impact) : '근거로 확인된 효과 없음'}`, ''] : []),
     ...analysisSourceLines(source), `- 분석 입력 버전: ${value.inputVersion}`,

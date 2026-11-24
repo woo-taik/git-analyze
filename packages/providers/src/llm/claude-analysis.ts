@@ -8,7 +8,8 @@ import { prepareAnalysisTransmission } from './transmission.js';
 
 const LEGACY_PROMPT_VERSION = 'claude-analysis-prompt-v1';
 export const PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v2';
-export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v3';
+export const CLAUDE_IMPACT_PROMPT_VERSION = 'claude-analysis-prompt-v3';
+export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v5';
 export const CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION = 'claude-analysis-wire-v2';
 const CLAUDE_V2_INSTRUCTIONS = [
   ANALYSIS_INSTRUCTIONS.replace(EXACT_CITATION_INSTRUCTION,
@@ -28,7 +29,17 @@ const CLAUDE_ANALYSIS_INSTRUCTIONS = [
 const instructionsByVersion = new Map([
   [LEGACY_PROMPT_VERSION, ANALYSIS_INSTRUCTIONS],
   [PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_V2_INSTRUCTIONS],
-  [CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_INSTRUCTIONS],
+  [CLAUDE_IMPACT_PROMPT_VERSION, CLAUDE_ANALYSIS_INSTRUCTIONS],
+  ['claude-analysis-prompt-v4', [CLAUDE_ANALYSIS_INSTRUCTIONS,
+    'The reader sees exactly seven lines: 성과, 문제, 원인, 해결책들, 트레이드오프, 선택, 효과. Center all seven on ONE decision. Each summary claim should fit in a short Korean phrase without headings, line breaks or process commentary.',
+    'Use problem-1 for the user-visible problem, cause-1 for the concrete mechanism, alternative-1 and alternative-2 for short option names, tradeoff-1 for the main gain and cost, decision-1 for the adopted option and its documented reason, and effect-1 for the resulting observable behavior. Keep secondary changes out of these slots.',
+    'Use metric-1 for the headline: name the change and its quantified impact. An evidenced delta alone is sufficient. Keep its unit, qualifier and measurement basis; never reverse-engineer before/after totals. If no quantity is supported, use the missing metric convention and let effect-1 describe the verified outcome.',
+  ].join('\n')],
+  [CLAUDE_ANALYSIS_PROMPT_VERSION, [CLAUDE_ANALYSIS_INSTRUCTIONS,
+    'The CLI prints one or two short Korean sentences in total. Summarize one decision, without section labels, arrows, line breaks or a list of stages. Keep detailed claims in their JSON sections.',
+    'For metric-1 write the chosen change and the most meaningful supported effect in one sentence. Keep the unit, qualifier and measurement basis of any measured delta; do not invent before or after totals. If no metric is supported, leave metric-1 missing and use effect-1 for the verified behavior.',
+    'For decision-1 write one complementary sentence connecting the problem or cause to the choice. Include the most relevant alternative and trade-off only when evidenced. Avoid repeating the headline. Keep inferred comparisons in alternatives.',
+  ].join('\n')],
 ]);
 
 export type ClaudeAnalysisResult = OpenAiAnalysisResult;

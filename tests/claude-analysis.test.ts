@@ -148,6 +148,8 @@ describe('Claude analysis adapter and CLI default', () => {
         { id: 'alternative-1', text: '분석상 대안으로 별도 검증 계층을 둘 수 있다.', status: 'inferred', evidence: [1] },
         { id: 'tradeoff-1', text: '분석상 검증을 공용화할 수 있지만 호출 위치가 추가된다.', status: 'inferred', evidence: [1] },
       ];
+      value.decision = [{ id: 'decision-1', text: '잘못된 입력을 먼저 걸러내도록\n요청 시점에 검증한다.',
+        status: 'source_supported', evidence: [1] }];
       value.results = [
         { id: 'effect-2', text: '응답 시간이 개선됐을 수 있다.', status: 'inferred', evidence: [] },
         { id: 'effect-1', text: '입력 검증을 추가했다.', status: 'source_supported', evidence: [1] },
@@ -161,11 +163,9 @@ describe('Claude analysis adapter and CLI default', () => {
     const first = await executeAnalyze([...args, '--output', output()], { ...network, env: { ANTHROPIC_API_KEY: config.apiKey } });
     expect(first).toMatchObject({ cacheHit: false, externalRequests: 2, impactSummary: effect });
     const markdown = await readFile(first.markdownPath, 'utf8');
-    expect(markdown.split('\n')[2]).toBe(`> **효과 한 줄** — ${effect}`);
-    expect([...markdown.matchAll(/^## (.*)$/gm)].slice(0, 6).map(match => match[1]))
-      .toEqual(['문제', '원인', '해결책들', '트레이드오프', '선택', '효과']);
-    expect(markdown).toMatch(/## 원인\n\n- \[inferred\].*\(cause-1\)/);
-    expect(markdown).toMatch(/## 트레이드오프\n\n- \[inferred\].*\(tradeoff-1\)/);
+    expect(markdown.trimEnd().split('\n')).toEqual([
+      `- **${effect}**`, '- 잘못된 입력을 먼저 걸러내도록 요청 시점에 검증한다.',
+    ]);
     const restored = await loadSavedAnalysis(first.jsonPath);
     expect(restored.baseline.analysis.implementation).toHaveLength(1);
     const saved = JSON.parse(await readFile(first.jsonPath, 'utf8'));
@@ -173,6 +173,7 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(saved.result.usage.cacheCreationInputTokens).toBe(50);
     const second = await executeAnalyze([...args, '--output', output()], { ...network, env: {} });
     expect(second).toMatchObject({ cacheHit: true, externalRequests: 0, impactSummary: effect });
+    expect(await readFile(second.markdownPath, 'utf8')).toBe(markdown);
     expect(network.requests).toHaveLength(2);
     const review = await executeReview(['--analysis', first.jsonPath, '--store-dir', join(root, 'reviews'), '--output', output()]);
     expect(review.externalRequests).toBe(0);
@@ -186,10 +187,12 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(data.countRequest.system).toContain('문제 → 원인 → 해결책들 → 트레이드오프 → 선택 → 효과');
     const currentKey = saved.cache.key;
     const legacyFile = join(root, 'legacy-analysis.json');
-    for (const [legacyVersion, citationNumber] of [['claude-analysis-prompt-v1', undefined], ['claude-analysis-prompt-v2', 1]] as const) {
+    expect(data.countRequest.system).toContain('one or two short Korean sentences in total');
+    for (const [legacyVersion, citationNumber] of [['claude-analysis-prompt-v1', undefined], ['claude-analysis-prompt-v2', 1],
+      ['claude-analysis-prompt-v3', 1], ['claude-analysis-prompt-v4', 1]] as const) {
       const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
       expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBe(citationNumber);
-      expect(legacy.body.system).not.toContain('트레이드오프');
+      expect(legacy.body.system).not.toContain('one or two short Korean sentences in total');
       const legacyKey = analysisCacheKey(legacy, saved.settings);
       expect(legacyKey).not.toBe(currentKey);
       saved.result.request.promptVersion = legacyVersion;

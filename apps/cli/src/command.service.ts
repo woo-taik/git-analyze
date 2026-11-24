@@ -58,9 +58,16 @@ export class CommandService {
       case 'evidence':
         console.log(JSON.stringify(await executeEvidence(extra), null, 2));
         return;
-      case 'analyze':
-        console.log(JSON.stringify(await executeAnalyze(extra), null, 2));
+      case 'analyze': {
+        const result = await executeAnalyze(extra);
+        if (result.status === 'analyzed') {
+          process.stdout.write(result.markdown);
+          if (result.cacheWarning) console.error(result.cacheWarning);
+        } else {
+          console.log(JSON.stringify(result, null, 2));
+        }
         return;
+      }
       case 'review':
         console.log(JSON.stringify(await executeReview(extra), null, 2));
         return;

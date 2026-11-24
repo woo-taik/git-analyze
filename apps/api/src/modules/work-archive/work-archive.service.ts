@@ -5,9 +5,17 @@ import { ConflictException, HttpException, Inject, Injectable, NotFoundException
   ServiceUnavailableException, UnprocessableEntityException, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
 import type { ReviewAction } from '@git-analyze/core';
-import { updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError } from '@git-analyze/database';
+import { startJobReview, updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError,
+  ArchiveReviewExistsError, type AnalysisJobRow, type ArchivedReviewSnapshot } from '@git-analyze/database';
+import { restoreJobAnalysis } from '@git-analyze/providers';
 
 export const ARCHIVE_CONFIG = Symbol('ARCHIVE_CONFIG');
+
+function reviewDetail(scope: ArchiveScope, current: ArchivedReviewSnapshot) {
+  return { scope, reviewVersion: current.version, reviewRevision: current.stored.revision,
+    analysisVersion: current.context.analysisVersion, review: current.stored.state,
+    evidence: current.context.packet, source: current.saved.source };
+}
 
 @Injectable()
 export class WorkArchiveService implements OnModuleDestroy {
@@ -25,6 +33,7 @@ export class WorkArchiveService implements OnModuleDestroy {
     try { return await operation(this.database.db); }
     catch (error) {
       if (error instanceof ArchiveNotFoundError) throw new NotFoundException('archived_work_not_found');
+      if (error instanceof ArchiveReviewExistsError) throw new ConflictException('review_already_exists');
       if (error instanceof ArchiveReviewConflictError) throw new ConflictException('review_version_changed');
       if (error instanceof ArchiveReviewChangesError) throw new UnprocessableEntityException('review_changes_rejected');
       if (error instanceof ResumeOutputError) throw new UnprocessableEntityException(error.code);
@@ -50,19 +59,21 @@ export class WorkArchiveService implements OnModuleDestroy {
   }
 
   detail(scope: ArchiveScope) {
-    return this.query((db) => withArchivedReview(db, scope, async (current) => ({
-      scope, reviewVersion: current.version, reviewRevision: current.stored.revision,
-      analysisVersion: current.context.analysisVersion, review: current.stored.state,
-      evidence: current.context.packet, source: current.saved.source,
-    })));
+    return this.query((db) => withArchivedReview(db, scope, async current => reviewDetail(scope, current)));
+  }
+
+  startReview(scope: ArchiveScope, job: AnalysisJobRow) {
+    return this.query(async db => {
+      const analysis = await restoreJobAnalysis(job.request, job.request_key, job.result);
+      const current = await startJobReview(db, scope, job.id, analysis);
+      return { ...reviewDetail(scope, current), externalRequests: 0 };
+    });
   }
 
   updateReview(scope: ArchiveScope, expectedVersion: string, actions: readonly ReviewAction[], actor: string) {
     return this.query(async db => {
       const current = await updateArchivedReview(db, scope, expectedVersion, actions, actor);
-      return { scope, reviewVersion: current.version, reviewRevision: current.stored.revision,
-        analysisVersion: current.context.analysisVersion, review: current.stored.state,
-        evidence: current.context.packet, source: current.saved.source, externalRequests: 0 };
+      return { ...reviewDetail(scope, current), externalRequests: 0 };
     });
   }
 

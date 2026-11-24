@@ -133,14 +133,19 @@ describe('analysis CLI assembly', () => {
     const savedText = await readFile(first.jsonPath, 'utf8');
     expect(savedText).not.toMatch(/FIXTURE_API_KEY_DO_NOT_SAVE|ENV_SECRET_MUST_STAY_LOCAL/);
     const markdown = await readFile(first.markdownPath, 'utf8');
-    expect(markdown).toContain('source-1');
+    expect(markdown.trimEnd().split('\n')).toHaveLength(1);
+    const cli = await execute(process.execPath, ['apps/cli/dist/index.js', 'analyze',
+      ...args({ ...paths, output: paths.output + '-cli' })],
+      { cwd: projectRoot, env: { ...process.env, OPENAI_API_KEY: '' }, timeout: 15_000, windowsHide: true });
+    expect(cli.stdout).toBe(markdown);
+    expect(await readFile(join(paths.output + '-cli', 'analysis.md'), 'utf8')).toBe(markdown);
     expect(markdown).toContain('&lt;script&gt;');
     expect(markdown).toContain('\\*\\*text\\*\\*');
     const preview = await executeAnalyze(args({ ...paths, output: `${paths.output}-preview` }, ['--dry-run']), { ...network, env: {} });
     const previewJson = JSON.parse(await readFile(preview.jsonPath, 'utf8'));
     expect(previewJson.countRequest).toEqual(network.requests[0]!.body);
     expect(previewJson.analysisRequest).toEqual(network.requests[1]!.body);
-  });
+  }, 20_000);
 
   it('does not overwrite an existing output or call the provider when output cannot be reserved', async () => {
     const paths = runPaths();

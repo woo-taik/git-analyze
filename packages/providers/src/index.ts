@@ -8,7 +8,7 @@ export type { OpenAiAnalysisConfig, OpenAiAnalysisResult, OpenAiAnalysisErrorCod
 export { TransmissionError, TRANSMISSION_POLICY_VERSION } from './llm/transmission.js';
 export type { AnalysisTransmissionReceipt } from './llm/transmission.js';
 export { ClaudeAnalysisProvider, ClaudeAnalysisError, prepareClaudeAnalysisRequest,
-  CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION } from './llm/claude-analysis.js';
+  CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_IMPACT_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION } from './llm/claude-analysis.js';
 export type { ClaudeAnalysisResult } from './llm/claude-analysis.js';
 
 export * from './llm/analysis-input.js';

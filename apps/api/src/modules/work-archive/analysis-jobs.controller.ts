@@ -1,9 +1,9 @@
-import { Body, BadRequestException, ConflictException, Controller, Get, Inject, NotFoundException, Param, Post,
+import { Body, BadRequestException, ConflictException, Controller, Get, HttpCode, Inject, NotFoundException, Param, Post,
   ServiceUnavailableException, UseGuards, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
 import { AnalysisJobStore, createDatabase, type AnalysisJobRow } from '@git-analyze/database';
 import { identity, object, prepareAnalysisSubmission } from '@git-analyze/providers';
-import { ARCHIVE_CONFIG } from './work-archive.service.js';
+import { ARCHIVE_CONFIG, WorkArchiveService } from './work-archive.service.js';
 import { LocalArchiveGuard } from './local-archive.guard.js';
 
 const publicJob = (job: AnalysisJobRow) => ({ jobId: job.id, status: job.status, requestKey: job.request_key,
@@ -14,7 +14,7 @@ const publicJob = (job: AnalysisJobRow) => ({ jobId: job.id, status: job.status,
 export class AnalysisJobsController implements OnModuleDestroy {
   private readonly database;
   private readonly store;
-  constructor(@Inject(ARCHIVE_CONFIG) config: AppConfig) {
+  constructor(@Inject(ARCHIVE_CONFIG) config: AppConfig, @Inject(WorkArchiveService) private readonly archive: WorkArchiveService) {
     this.database = config.databaseUrl ? createDatabase(config.databaseUrl,
       { connectionTimeoutMillis: 5000, statementTimeoutMillis: 5000 }) : undefined;
     this.store = this.database ? new AnalysisJobStore(this.database.db.$client) : undefined;
@@ -45,8 +45,7 @@ export class AnalysisJobsController implements OnModuleDestroy {
     try { return publicJob(await this.store.submit(scope, request.key, request.snapshot)); }
     catch { throw new ServiceUnavailableException('analysis_jobs_unavailable'); }
   }
-  @Get(':jobId')
-  async get(@Param() params: Record<string, string>) {
+  private async loadJob(params: Record<string, string>) {
     const scope = this.scope(params);
     if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(params.jobId ?? '')) throw new BadRequestException('invalid_job_id');
     if (!this.store) throw new ServiceUnavailableException('analysis_database_not_configured');
@@ -54,7 +53,18 @@ export class AnalysisJobsController implements OnModuleDestroy {
     try { job = await this.store.get(scope, params.jobId!); }
     catch { throw new ServiceUnavailableException('analysis_jobs_unavailable'); }
     if (!job) throw new NotFoundException('analysis_job_not_found');
-    return publicJob(job);
+    return { scope, job };
+  }
+  @Get(':jobId')
+  async get(@Param() params: Record<string, string>) {
+    return publicJob((await this.loadJob(params)).job);
+  }
+  @Post(':jobId/review')
+  @HttpCode(200)
+  async startReview(@Param() params: Record<string, string>) {
+    const { scope, job } = await this.loadJob(params);
+    if (job.status !== 'succeeded') throw new ConflictException('analysis_job_not_succeeded');
+    return this.archive.startReview(scope, job);
   }
   @Post(':jobId/retry')
   async retry(@Param() params: Record<string, string>, @Body() body: unknown) {

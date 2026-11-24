@@ -100,10 +100,10 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
     const report = { schemaVersion: 1, status: 'analyzed', createdAt: new Date().toISOString(), source: loaded.source,
       bindings: loaded.bindings, settings, cache: { hit: cacheHit, stored: cacheStored, key, enabled: !values['no-cache'] },
       transmission: prepared.receipt, sentInput: JSON.parse(prepared.input) as unknown, result };
-    const files = await saveAnalysisReports(directory, 'analysis', report,
-      renderAnalysisMarkdown(result.value, loaded.source, cacheHit, prepared.receipt.complete, false, result.request.promptVersion));
-    const impactSummary = analysisImpactSummary(result.value, result.request.promptVersion);
-    return { status: 'analyzed' as const, cacheHit, cacheStored, cacheKey: key,
+    const markdown = renderAnalysisMarkdown(result.value, loaded.source, cacheHit, prepared.receipt.complete, false, result.request.promptVersion);
+    const files = await saveAnalysisReports(directory, 'analysis', report, markdown);
+    const impactSummary = analysisImpactSummary(result.value);
+    return { status: 'analyzed' as const, markdown, cacheHit, cacheStored, cacheKey: key,
       ...(impactSummary === null ? {} : { impactSummary }),
       externalRequests: cacheHit ? 0 : 2, cacheWarning: !values['no-cache'] && !cacheHit && !cacheStored ? 'cache_write_failed' : null, ...files };
   } finally {
