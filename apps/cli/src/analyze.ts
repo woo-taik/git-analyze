@@ -6,7 +6,8 @@ import { ClaudeAnalysisError, OpenAiAnalysisError } from '@git-analyze/providers
 import { generationRequest, prepareAnalysisRequest } from './analysis-runtime.js';
 import { analysisCacheKey, loadAnalysisCache, storeAnalysisCache, type AnalysisSettings } from './analysis-cache.js';
 import { identity, loadAnalysisInput, readBoundedJson } from './analysis-input.js';
-import { analysisSourceLines, renderAnalysisMarkdown, renderPreviewMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
+import { analysisImpactSummary, analysisSourceLines, renderAnalysisMarkdown, renderPreviewMarkdown,
+  reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
 
 function positive(value: string | undefined, fallback?: number, maximum = Number.MAX_SAFE_INTEGER): number {
   if (value === undefined && fallback !== undefined) return fallback;
@@ -100,8 +101,10 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
       bindings: loaded.bindings, settings, cache: { hit: cacheHit, stored: cacheStored, key, enabled: !values['no-cache'] },
       transmission: prepared.receipt, sentInput: JSON.parse(prepared.input) as unknown, result };
     const files = await saveAnalysisReports(directory, 'analysis', report,
-      renderAnalysisMarkdown(result.value, loaded.source, cacheHit, prepared.receipt.complete));
+      renderAnalysisMarkdown(result.value, loaded.source, cacheHit, prepared.receipt.complete, false, result.request.promptVersion));
+    const impactSummary = analysisImpactSummary(result.value, result.request.promptVersion);
     return { status: 'analyzed' as const, cacheHit, cacheStored, cacheKey: key,
+      ...(impactSummary === null ? {} : { impactSummary }),
       externalRequests: cacheHit ? 0 : 2, cacheWarning: !values['no-cache'] && !cacheHit && !cacheStored ? 'cache_write_failed' : null, ...files };
   } finally {
     if (locked) await rmdir(lockPath);

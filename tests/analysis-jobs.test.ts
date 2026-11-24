@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { buildLocalEvidence } from '../packages/core/src/index.js';
-import { hash, prepareAnalysisSubmission } from '../packages/providers/src/index.js';
+import { analysisCacheKey, hash, prepareAnalysisRequest, prepareAnalysisSubmission } from '../packages/providers/src/index.js';
 import { AnalysisJobStore, createDatabase } from '../packages/database/src/index.js';
 import { analysisHandler } from '../apps/worker/src/analysis-handler.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
@@ -93,6 +93,30 @@ describe('asynchronous analysis', () => {
       expect(row.status).toBe('needs_input');
       expect(JSON.stringify(row.error)).not.toContain('SECRET');
       expect(fetch.mock.calls.length).toBe('OPENAI_API_KEY' in env ? 1 : 0);
+    }
+  });
+  it.each(['claude-analysis-prompt-v2', 'claude-analysis-prompt-v3'])('executes the prompt approved at submission (%s)', async promptVersion => {
+    const body = await fixture();
+    const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude' } });
+    const { promptVersion: storedVersion, ...legacySnapshot } = request.snapshot;
+    const prepared = prepareAnalysisRequest(request.loaded.packet, request.settings, request.transmission, promptVersion);
+    const key = analysisCacheKey(prepared, request.settings);
+    const legacy = promptVersion !== storedVersion;
+    const { row, store, payload } = memoryStore(legacy ? legacySnapshot : request.snapshot, key);
+    const fetch = vi.fn<typeof globalThis.fetch>(async url => {
+      if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: 100 });
+      const value = { workItemId: prepared.validationPacket.workItemId, inputVersion: prepared.validationPacket.version,
+        problem: [], constraints: [], alternatives: [], decision: [], implementation: [],
+        results: [], verification: [], contribution: [], missingQuestions: [] };
+      return Response.json({ type: 'message', role: 'assistant', model: 'claude-fixture', stop_reason: 'end_turn',
+        content: [{ type: 'text', text: JSON.stringify(value) }], usage: { input_tokens: 100, output_tokens: 50 } });
+    });
+    await analysisHandler(store, { ANTHROPIC_API_KEY: 'fixture-key' }, fetch)(payload);
+    expect(row.status).toBe('succeeded');
+    expect(row.result.result.request.promptVersion).toBe(promptVersion);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetch.mock.calls) {
+      expect(JSON.parse(init!.body as string).system).toBe(prepared.body.system);
     }
   });
   it.runIf(Boolean(process.env.GIT_ANALYZE_TEST_DATABASE_URL))('deduplicates DB submissions, isolates scopes and recovers abandoned executions', async () => {

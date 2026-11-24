@@ -137,18 +137,42 @@ describe('Claude analysis adapter and CLI default', () => {
   });
 
   it('defaults CLI to Claude, persists compatible review input, and reuses cache with no API key or count', async () => {
-    const network = harness();
+    const effect = '입력 검증 항목을 0개에서 1개로 늘렸다.';
+    const network = harness(response => {
+      const value = JSON.parse(response.content[0].text);
+      value.problem = [
+        { id: 'problem-1', text: '입력 검증이 없었다.', status: 'source_supported', evidence: [1] },
+        { id: 'cause-1', text: '검증 함수가 호출되지 않았다.', status: 'inferred', evidence: [1] },
+      ];
+      value.alternatives = [
+        { id: 'alternative-1', text: '분석상 대안으로 별도 검증 계층을 둘 수 있다.', status: 'inferred', evidence: [1] },
+        { id: 'tradeoff-1', text: '분석상 검증을 공용화할 수 있지만 호출 위치가 추가된다.', status: 'inferred', evidence: [1] },
+      ];
+      value.results = [
+        { id: 'effect-2', text: '응답 시간이 개선됐을 수 있다.', status: 'inferred', evidence: [] },
+        { id: 'effect-1', text: '입력 검증을 추가했다.', status: 'source_supported', evidence: [1] },
+        { id: 'metric-1', text: effect, status: 'source_supported', evidence: [1] },
+      ];
+      response.content[0].text = JSON.stringify(value);
+      return response;
+    });
     const args = ['--input', input, '--bindings', bindings, '--excerpt', packet.excerpts[0]!.id, '--model', 'claude-fixture',
       '--model-epoch', 'fixture-v1', '--context-window', '16000', '--cache-dir', join(root, 'cache')];
     const first = await executeAnalyze([...args, '--output', output()], { ...network, env: { ANTHROPIC_API_KEY: config.apiKey } });
-    expect(first).toMatchObject({ cacheHit: false, externalRequests: 2 });
+    expect(first).toMatchObject({ cacheHit: false, externalRequests: 2, impactSummary: effect });
+    const markdown = await readFile(first.markdownPath, 'utf8');
+    expect(markdown.split('\n')[2]).toBe(`> **효과 한 줄** — ${effect}`);
+    expect([...markdown.matchAll(/^## (.*)$/gm)].slice(0, 6).map(match => match[1]))
+      .toEqual(['문제', '원인', '해결책들', '트레이드오프', '선택', '효과']);
+    expect(markdown).toMatch(/## 원인\n\n- \[inferred\].*\(cause-1\)/);
+    expect(markdown).toMatch(/## 트레이드오프\n\n- \[inferred\].*\(tradeoff-1\)/);
     const restored = await loadSavedAnalysis(first.jsonPath);
     expect(restored.baseline.analysis.implementation).toHaveLength(1);
     const saved = JSON.parse(await readFile(first.jsonPath, 'utf8'));
     expect(saved.settings.provider).toBe('claude');
     expect(saved.result.usage.cacheCreationInputTokens).toBe(50);
     const second = await executeAnalyze([...args, '--output', output()], { ...network, env: {} });
-    expect(second).toMatchObject({ cacheHit: true, externalRequests: 0 });
+    expect(second).toMatchObject({ cacheHit: true, externalRequests: 0, impactSummary: effect });
     expect(network.requests).toHaveLength(2);
     const review = await executeReview(['--analysis', first.jsonPath, '--store-dir', join(root, 'reviews'), '--output', output()]);
     expect(review.externalRequests).toBe(0);
@@ -158,19 +182,22 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(data.analysisRequest.max_tokens).toBe(6000);
     expect(data.analysisRequest).not.toHaveProperty('max_output_tokens');
 
-    const legacyVersion = 'claude-analysis-prompt-v1';
-    const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
     expect(JSON.parse(data.countRequest.messages[0].content).excerpts[0].citationNumber).toBe(1);
-    expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBeUndefined();
-    const legacyKey = analysisCacheKey(legacy, saved.settings);
-    expect(legacyKey).not.toBe(saved.cache.key);
+    expect(data.countRequest.system).toContain('문제 → 원인 → 해결책들 → 트레이드오프 → 선택 → 효과');
+    const currentKey = saved.cache.key;
     const legacyFile = join(root, 'legacy-analysis.json');
-    saved.result.request.promptVersion = legacyVersion;
-    saved.result.request.wireSchemaVersion = legacy.wireSchemaVersion;
-    saved.cache.key = legacyKey;
-    await writeFile(legacyFile, JSON.stringify(saved));
-    const legacyReport = await loadSavedAnalysis(legacyFile);
-    expect(legacyReport.baseline).toEqual(restored.baseline);
+    for (const [legacyVersion, citationNumber] of [['claude-analysis-prompt-v1', undefined], ['claude-analysis-prompt-v2', 1]] as const) {
+      const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
+      expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBe(citationNumber);
+      expect(legacy.body.system).not.toContain('트레이드오프');
+      const legacyKey = analysisCacheKey(legacy, saved.settings);
+      expect(legacyKey).not.toBe(currentKey);
+      saved.result.request.promptVersion = legacyVersion;
+      saved.result.request.wireSchemaVersion = legacy.wireSchemaVersion;
+      saved.cache.key = legacyKey;
+      await writeFile(legacyFile, JSON.stringify(saved));
+      expect((await loadSavedAnalysis(legacyFile)).baseline).toEqual(restored.baseline);
+    }
     saved.result.request.promptVersion = CLAUDE_ANALYSIS_PROMPT_VERSION;
     saved.result.request.wireSchemaVersion = CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION;
     await writeFile(legacyFile, JSON.stringify(saved));

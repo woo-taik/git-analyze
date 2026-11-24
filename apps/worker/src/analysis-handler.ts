@@ -14,16 +14,16 @@ export function analysisHandler(store: AnalysisJobStore, env: NodeJS.ProcessEnv 
     let outcome: { status: 'succeeded' | 'failed' | 'needs_input'; result: unknown; error: unknown };
     let externalStarted = false;
     try {
-      const request = await prepareAnalysisSubmission(row.request);
+      const request = await prepareAnalysisSubmission(row.request, row.request_key);
       const { loaded, prepared, settings, transmission, key } = request;
-      if (key !== row.request_key || loaded.bindings.ownerId !== row.owner_id
+      if (loaded.bindings.ownerId !== row.owner_id
         || loaded.bindings.repositoryId !== row.repository_id || loaded.bindings.workItemId !== row.work_item_id) throw new Error();
       const apiKey = env[settings.provider === 'claude' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'];
       if (!apiKey?.trim()) {
         outcome = { status: 'needs_input', result: null, error: { code: 'provider_key_missing', usage: null } };
       } else {
         externalStarted = true;
-        const result = await executeAnalysis(loaded.packet, settings, transmission, apiKey, fetch);
+        const result = await executeAnalysis(loaded.packet, settings, transmission, apiKey, fetch, request.snapshot.promptVersion);
         outcome = { status: 'succeeded', error: null, result: {
           schemaVersion: 1, status: 'analyzed', createdAt: new Date().toISOString(), source: loaded.source,
           evidence: request.snapshot.evidence, bindings: loaded.bindings, settings, cache: { hit: false, stored: true, key, enabled: true },

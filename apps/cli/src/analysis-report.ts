@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { ANALYSIS_CLAIM_FIELDS, type WorkItemAnalysis } from '@git-analyze/core';
+import { ANALYSIS_CLAIM_FIELDS, type Claim, type WorkItemAnalysis } from '@git-analyze/core';
+import { CLAUDE_ANALYSIS_PROMPT_VERSION } from '@git-analyze/providers';
 import type { prepareOpenAiAnalysisRequest } from '@git-analyze/providers';
 import { escapeMarkdownText as text } from './history-report.js';
 import type { loadAnalysisInput } from './analysis-input.js';
@@ -47,16 +48,47 @@ export function renderPreviewMarkdown(source: Source, prepared: Pick<ReturnType<
 
 const labels: Record<(typeof ANALYSIS_CLAIM_FIELDS)[number], string> = { problem: '문제', constraints: '제약',
   alternatives: '대안', decision: '선택과 이유', implementation: '구현', results: '결과', verification: '검증', contribution: '기여' };
-export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, cacheHit: boolean, complete: boolean, reviewed = false): string {
-  const lines = ['# 작업 분석 초안', '', ...analysisSourceLines(source), `- 분석 입력 버전: ${value.inputVersion}`,
+const supported = (claim: Claim) => claim.status === 'source_supported' || claim.status === 'user_confirmed';
+
+export function analysisImpactSummary(value: WorkItemAnalysis, promptVersion?: string): string | null {
+  if (promptVersion !== CLAUDE_ANALYSIS_PROMPT_VERSION) return null;
+  const effect = value.results.find(claim => claim.id === 'metric-1' && supported(claim))
+    ?? value.results.find(claim => claim.id === 'effect-1' && supported(claim))
+    ?? value.results.find(supported);
+  return effect?.text.trim().replace(/\s+/g, ' ') ?? null;
+}
+
+function reportSections(value: WorkItemAnalysis, impactFormat: boolean): [string, readonly Claim[]][] {
+  if (!impactFormat) return ANALYSIS_CLAIM_FIELDS.map(field => [labels[field], value[field]]);
+  return [
+    ['문제', value.problem.filter(claim => !claim.id.startsWith('cause-'))],
+    ['원인', value.problem.filter(claim => claim.id.startsWith('cause-'))],
+    ['해결책들', value.alternatives.filter(claim => !claim.id.startsWith('tradeoff-'))],
+    ['트레이드오프', value.alternatives.filter(claim => claim.id.startsWith('tradeoff-'))],
+    ['선택', value.decision],
+    ['효과', value.results],
+    ['구현', value.implementation],
+    ['제약', value.constraints],
+    ['검증', value.verification],
+    ['기여', value.contribution],
+  ];
+}
+
+export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, cacheHit: boolean, complete: boolean,
+  reviewed = false, promptVersion?: string): string {
+  const impactFormat = promptVersion === CLAUDE_ANALYSIS_PROMPT_VERSION;
+  const impact = analysisImpactSummary(value, promptVersion);
+  const lines = ['# 작업 분석 초안', '',
+    ...(impactFormat ? [`> **효과 한 줄** — ${impact ? text(impact) : '근거로 확인된 효과 없음'}`, ''] : []),
+    ...analysisSourceLines(source), `- 분석 입력 버전: ${value.inputVersion}`,
     `- 전송 근거 완전성: ${complete}; 캐시 재사용: ${cacheHit}`, '',
     reviewed ? '사용자 검토 상태를 반영한 분석이다. 미확인·추정 주장은 성과 문장에 포함하지 않는다.'
       : '사용자 확인 전의 구조화 분석이다. 인용의 존재가 내용의 사실성·업무 완료·테스트 성공을 보장하지 않는다.',
     '캐시 재사용 시 usage는 최초 생성의 사용량이며 이번 실행의 새 청구량이 아니다.', ''];
-  for (const field of ANALYSIS_CLAIM_FIELDS) {
-    lines.push(`## ${labels[field]}`, '');
-    if (!value[field].length) lines.push('- (근거 부족 또는 기록 없음)', '');
-    for (const claim of value[field]) {
+  for (const [label, claims] of reportSections(value, impactFormat)) {
+    lines.push(`## ${label}`, '');
+    if (!claims.length) lines.push('- (근거 부족 또는 기록 없음)', '');
+    for (const claim of claims) {
       lines.push(`- [${claim.status}] ${text(claim.text)} (${text(claim.id)})`);
       for (const evidence of claim.evidence) {
         lines.push(`  - 근거: ${text(evidence.sourceRecordId)} / ${text(evidence.sourceVersion)} / ${text(evidence.locator ?? '(없음)')}`);

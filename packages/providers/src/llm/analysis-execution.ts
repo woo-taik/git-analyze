@@ -20,11 +20,13 @@ export function parseAnalysisSettings(value: unknown): AnalysisSettings {
   return settings;
 }
 export async function executeAnalysis(packet: EvidencePacket, settings: AnalysisSettings,
-  transmission: LlmAnalysisRequestOptions['transmission'], apiKey: string, fetch?: typeof globalThis.fetch) {
-  const prepared = prepareAnalysisRequest(packet, settings, transmission);
+  transmission: LlmAnalysisRequestOptions['transmission'], apiKey: string, fetch?: typeof globalThis.fetch,
+  promptVersion?: string) {
+  const prepared = prepareAnalysisRequest(packet, settings, transmission, promptVersion);
   const Provider = settings.provider === 'claude' ? ClaudeAnalysisProvider : OpenAiAnalysisProvider;
   const provider = new Provider({ apiKey, model: settings.model, contextWindowTokens: settings.contextWindowTokens,
-    timeoutMs: settings.timeoutMs }, fetch ? { fetch } : {});
+    timeoutMs: settings.timeoutMs, ...('promptVersion' in prepared ? { promptVersion: prepared.promptVersion } : {}) },
+    fetch ? { fetch } : {});
   return validateAnalysisResult(await provider.analyze(packet, { maxInputTokens: settings.maxInputTokens,
     maxOutputTokens: settings.maxOutputTokens, transmission }), prepared, settings);
 }

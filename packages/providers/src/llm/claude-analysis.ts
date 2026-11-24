@@ -1,14 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ANALYSIS_CLAIM_FIELDS, ANALYSIS_SCHEMA_VERSION, MAX_ANALYSIS_JSON_BYTES, AnalysisValidationError, canonicalJson, parseWorkItemAnalysis,
   type EvidencePacket, type LlmAnalysisProvider, type LlmAnalysisRequestOptions, type LlmUsage } from '@git-analyze/core';
-import { ANALYSIS_INSTRUCTIONS, ANALYSIS_GENERATION_SCHEMA, EXACT_CITATION_INSTRUCTION, NUMBERED_CITATION_SCHEMA } from './analysis-prompt.js';
+import { ANALYSIS_INSTRUCTIONS, ANALYSIS_GENERATION_SCHEMA, EXACT_CITATION_INSTRUCTION, NUMBERED_CITATION_SCHEMA,
+  WORK_ITEM_IMPACT_INSTRUCTIONS } from './analysis-prompt.js';
 import type { OpenAiAnalysisErrorCode, OpenAiAnalysisResult } from './openai-analysis.js';
 import { prepareAnalysisTransmission } from './transmission.js';
 
 const LEGACY_PROMPT_VERSION = 'claude-analysis-prompt-v1';
-export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v2';
+export const PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v2';
+export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v3';
 export const CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION = 'claude-analysis-wire-v2';
-const CLAUDE_ANALYSIS_INSTRUCTIONS = [
+const CLAUDE_V2_INSTRUCTIONS = [
   ANALYSIS_INSTRUCTIONS.replace(EXACT_CITATION_INSTRUCTION,
     'In each claim, evidence is a list of distinct integer citationNumber values copied from the supplied excerpts. A source_supported claim must cite at least one excerpt. Never cite an excerpt that does not directly support the claim.'),
   'Write each claim as one short Korean sentence or phrase about one independently reviewable fact. Split distinct changes, effects or evidence into separate claims. Omit redundant claims.',
@@ -16,6 +18,18 @@ const CLAUDE_ANALYSIS_INSTRUCTIONS = [
   'Keep data freshness, cache retention, and refetch behavior separate. Never equate immediate staleness with disabled caching. If semantics are unproven, report the setting itself and leave any important effect as a question.',
   'Keep code changes, tests added, tests run and observed outcomes in separate claims. Do not combine an observed change with an inferred benefit in a source_supported claim.',
 ].join('\n');
+const CLAUDE_ANALYSIS_INSTRUCTIONS = [
+  CLAUDE_V2_INSTRUCTIONS.replace(
+    'Do not invent metrics, motives, alternatives, test success, deployment, completion or personal contribution.',
+    'Do not invent metrics, motives, historical deliberation, test success, deployment, completion or personal contribution.',
+  ),
+  WORK_ITEM_IMPACT_INSTRUCTIONS,
+].join('\n');
+const instructionsByVersion = new Map([
+  [LEGACY_PROMPT_VERSION, ANALYSIS_INSTRUCTIONS],
+  [PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_V2_INSTRUCTIONS],
+  [CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_INSTRUCTIONS],
+]);
 
 export type ClaudeAnalysisResult = OpenAiAnalysisResult;
 export class ClaudeAnalysisError extends Error {
@@ -27,15 +41,14 @@ export class ClaudeAnalysisError extends Error {
 export function prepareClaudeAnalysisRequest(packet: EvidencePacket, model: string, transmission: LlmAnalysisRequestOptions['transmission'],
   promptVersion: string = CLAUDE_ANALYSIS_PROMPT_VERSION) {
   if (typeof model !== 'string' || !model.trim()) throw new ClaudeAnalysisError('invalid_options', 'count');
-  if (promptVersion !== LEGACY_PROMPT_VERSION && promptVersion !== CLAUDE_ANALYSIS_PROMPT_VERSION) {
-    throw new Error('Unsupported saved Claude prompt version');
-  }
+  const system = instructionsByVersion.get(promptVersion);
+  if (!system) throw new Error('Unsupported saved Claude prompt version');
   const prepared = prepareAnalysisTransmission(structuredClone(packet), structuredClone(transmission));
   const legacy = promptVersion === LEGACY_PROMPT_VERSION;
   const content = legacy ? prepared.input : canonicalJson({ ...prepared.payload,
     excerpts: prepared.payload.excerpts.map((excerpt, index) => ({ ...excerpt, citationNumber: index + 1 })) });
   return { ...prepared, promptVersion, wireSchemaVersion: legacy ? 'claude-analysis-wire-v1' : CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION,
-    body: { model, system: legacy ? ANALYSIS_INSTRUCTIONS : CLAUDE_ANALYSIS_INSTRUCTIONS,
+    body: { model, system,
       messages: [{ role: 'user' as const, content }],
       output_config: { format: { type: 'json_schema' as const,
         schema: structuredClone(legacy ? ANALYSIS_GENERATION_SCHEMA : NUMBERED_CITATION_SCHEMA) } } } };
@@ -76,12 +89,20 @@ function usageOf(response: Record<string, unknown>, requestId: string | null): L
     outputTokens: usage.output_tokens, reasoningTokens: thinking, requestId };
 }
 
+interface ClaudeAnalysisConfig {
+  readonly apiKey: string;
+  readonly model: string;
+  readonly contextWindowTokens: number;
+  readonly timeoutMs?: number;
+  readonly promptVersion?: string;
+}
+
 /** Same reviewed-evidence boundary as other adapters; only Anthropic is contacted and retries are disabled. */
 export class ClaudeAnalysisProvider implements LlmAnalysisProvider {
   private readonly client: Anthropic;
   private readonly timeoutMs: number;
-  private readonly config: { readonly apiKey: string; readonly model: string; readonly contextWindowTokens: number; readonly timeoutMs?: number };
-  constructor(config: { readonly apiKey: string; readonly model: string; readonly contextWindowTokens: number; readonly timeoutMs?: number },
+  private readonly config: ClaudeAnalysisConfig;
+  constructor(config: ClaudeAnalysisConfig,
     dependencies: { readonly fetch?: typeof fetch } = {}) {
     this.config = { ...config };
     this.timeoutMs = config.timeoutMs ?? 60_000;
@@ -94,7 +115,7 @@ export class ClaudeAnalysisProvider implements LlmAnalysisProvider {
     const { maxInputTokens, maxOutputTokens } = options;
     if (!integer(maxInputTokens) || maxInputTokens < 1 || !integer(maxOutputTokens) || maxOutputTokens < 1
       || maxOutputTokens > this.config.contextWindowTokens) throw new ClaudeAnalysisError('invalid_options', 'count');
-    const prepared = prepareClaudeAnalysisRequest(packet, this.config.model, options.transmission);
+    const prepared = prepareClaudeAnalysisRequest(packet, this.config.model, options.transmission, this.config.promptVersion);
     const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs);
     const call = async <T>(stage: 'count' | 'analysis', operation: () => Promise<T>): Promise<T> => {
       try { signal.throwIfAborted(); const value = await operation(); signal.throwIfAborted(); return value; }
@@ -124,7 +145,11 @@ export class ClaudeAnalysisProvider implements LlmAnalysisProvider {
     if (usage.outputTokens > maxOutputTokens) throw new ClaudeAnalysisError('output_budget', 'analysis', usage);
     if (usage.inputTokens + maxOutputTokens > this.config.contextWindowTokens) throw new ClaudeAnalysisError('context_budget', 'analysis', usage);
     let value;
-    try { value = parseWorkItemAnalysis(expandCitations(object(text[0])!.text as string, prepared.validationPacket), { packet: prepared.validationPacket }); }
+    try {
+      const rawText = object(text[0])!.text as string;
+      const analysisJson = prepared.promptVersion === LEGACY_PROMPT_VERSION ? rawText : expandCitations(rawText, prepared.validationPacket);
+      value = parseWorkItemAnalysis(analysisJson, { packet: prepared.validationPacket });
+    }
     catch (error) { throw new ClaudeAnalysisError('invalid_analysis', 'analysis', usage, null, error instanceof AnalysisValidationError ? error.code : null); }
     return { value, usage, request: { requestedModel: this.config.model, promptVersion: prepared.promptVersion,
       analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION, wireSchemaVersion: prepared.wireSchemaVersion,

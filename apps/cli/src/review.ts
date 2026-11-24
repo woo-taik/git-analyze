@@ -37,7 +37,8 @@ export async function executeReview(args: readonly string[]) {
     const report = { schemaVersion: 1, status: 'reviewed', createdAt: metadata.recordedAt, scope, storeDirectory,
       version: current.version, revision: current.stored.revision, analysisFile: saved.analysisFile,
       analysisVersion: saved.analysisVersion, source: saved.source, state };
-    const markdown = [renderAnalysisMarkdown(state.analysis, saved.source, false, saved.baseline.packet.complete, true),
+    const markdown = [renderAnalysisMarkdown(state.analysis, saved.source, false, saved.baseline.packet.complete, true,
+      saved.result.request.promptVersion),
       '## 검토 이력', '', `- 검토 버전: ${current.version}; revision ${current.stored.revision}`,
       `- 완료 상태: ${state.completion?.status ?? 'unknown'}; 완료일: ${state.completion?.completedAt ?? '(미확인)'}`,
       '', ...state.events.map((event) => `- ${event.recordedAt} / ${text(event.actor)} / ${event.action.kind} / ${event.id}`),
