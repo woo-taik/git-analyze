@@ -1,5 +1,5 @@
 # 비동기 분석 작업
-로컬 API에서 검토한 근거를 제출하고 PostgreSQL·pg-boss 워커로 분석한다. 사용자 검토 이력은 변경하지 않는다.
+로컬 API에서 검토한 근거를 제출하고 PostgreSQL·pg-boss 워커로 분석한다. 저장된 분석을 검토에 반영하는 요청은 분석 제출과 별도로 보낸다.
 
 ## 실행
 DATABASE_URL과 ANTHROPIC_API_KEY(또는 OPENAI_API_KEY)를 설정한다.
@@ -23,7 +23,8 @@ CLI 파일 캐시와 DB 작업 캐시는 저장소가 다르므로 서로 자동
 
 ## 조회와 결과
 GET <공통 경로>/:jobId는 queued, running, succeeded, failed, needs_input과 result/error를 반환한다.
-성공한 작업은 본문 없이 `POST <공통 경로>/:jobId/review`로 DB에서 검토를 시작한다. 같은 요청을 반복하면 최신 검토를 반환한다. [검토 시작과 편집](archive-api.md#분석-작업에서-검토-시작)을 따른다.
+성공한 작업은 본문 없이 `POST <공통 경로>/:jobId/review`로 DB에서 검토를 시작한다. [검토 시작과 편집](archive-api.md#분석-작업에서-검토-시작)을 따른다.
+기존 검토에 새 분석을 적용할 때는 `POST <공통 경로>/:jobId/review/rebase`에 최신 검토 버전과 사용자 표시를 보낸다. [기존 검토에 재분석 적용](archive-api.md#기존-검토에-재분석-적용)을 따른다.
 CLI를 사용할 때는 성공 응답의 result를 analysis.json으로 저장하면 기존 pnpm cli review --analysis <파일> 명령으로 검토할 수 있다.
 근거 원문을 결과에 포함하므로 원래 evidence 파일 경로가 없어도 검증할 수 있다.
 원본·마스킹 값이 DB 요청 스냅샷에 보관된다. API 키는 요청에 넣지 않고 워커 환경으로만 제공한다.

@@ -1,10 +1,11 @@
-import { Body, BadRequestException, ConflictException, Controller, Get, HttpCode, Inject, NotFoundException, Param, Post,
+import { Body, BadRequestException, ConflictException, Controller, Get, HttpCode, Inject, NotFoundException, Param, Post, Query,
   ServiceUnavailableException, UseGuards, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
 import { AnalysisJobStore, createDatabase, type AnalysisJobRow } from '@git-analyze/database';
 import { identity, object, prepareAnalysisSubmission } from '@git-analyze/providers';
 import { ARCHIVE_CONFIG, WorkArchiveService } from './work-archive.service.js';
 import { LocalArchiveGuard } from './local-archive.guard.js';
+import { only, reviewRequest } from './review-request.js';
 
 const publicJob = (job: AnalysisJobRow) => ({ jobId: job.id, status: job.status, requestKey: job.request_key,
   createdAt: job.created_at, updatedAt: job.updated_at, result: job.result, error: job.error });
@@ -55,6 +56,13 @@ export class AnalysisJobsController implements OnModuleDestroy {
     if (!job) throw new NotFoundException('analysis_job_not_found');
     return { scope, job };
   }
+
+  private async loadSucceededJob(params: Record<string, string>) {
+    const current = await this.loadJob(params);
+    if (current.job.status !== 'succeeded') throw new ConflictException('analysis_job_not_succeeded');
+    return current;
+  }
+
   @Get(':jobId')
   async get(@Param() params: Record<string, string>) {
     return publicJob((await this.loadJob(params)).job);
@@ -62,10 +70,19 @@ export class AnalysisJobsController implements OnModuleDestroy {
   @Post(':jobId/review')
   @HttpCode(200)
   async startReview(@Param() params: Record<string, string>) {
-    const { scope, job } = await this.loadJob(params);
-    if (job.status !== 'succeeded') throw new ConflictException('analysis_job_not_succeeded');
+    const { scope, job } = await this.loadSucceededJob(params);
     return this.archive.startReview(scope, job);
   }
+
+  @Post(':jobId/review/rebase')
+  @HttpCode(200)
+  async rebaseReview(@Param() params: Record<string, string>, @Query() query: Record<string, unknown>, @Body() body: unknown) {
+    only(query, []);
+    const { expectedVersion, actor } = reviewRequest(body);
+    const { scope, job } = await this.loadSucceededJob(params);
+    return this.archive.rebaseReview(scope, job, expectedVersion, actor);
+  }
+
   @Post(':jobId/retry')
   async retry(@Param() params: Record<string, string>, @Body() body: unknown) {
     const current = await this.get(params);

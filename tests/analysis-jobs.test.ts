@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
-import { buildLocalEvidence } from '../packages/core/src/index.js';
+import { buildLocalEvidence, type ReviewAction } from '../packages/core/src/index.js';
 import { analysisCacheKey, hash, prepareAnalysisRequest, prepareAnalysisSubmission, restoreJobAnalysis } from '../packages/providers/src/index.js';
 import { AnalysisJobStore, createDatabase } from '../packages/database/src/index.js';
 import { analysisHandler } from '../apps/worker/src/analysis-handler.js';
@@ -41,12 +41,12 @@ function memoryStore(request: unknown, key: string) {
   };
   return { row, store: store as unknown as AnalysisJobStore, payload: { ownerId: 'owner', repositoryId: 'repo', targetId: row.id, inputVersion: key } };
 }
-function claudeResponse(packet: { workItemId: string; version: string }) {
+function claudeResponse(packet: { workItemId: string; version: string }, fields: Record<string, unknown> = {}) {
   return vi.fn<typeof globalThis.fetch>(async url => {
     if (String(url).endsWith('/count_tokens')) return Response.json({ input_tokens: 100 });
     const value = { workItemId: packet.workItemId, inputVersion: packet.version,
       problem: [], constraints: [], alternatives: [], decision: [], implementation: [],
-      results: [], verification: [], contribution: [], missingQuestions: [] };
+      results: [], verification: [], contribution: [], missingQuestions: [], ...fields };
     return Response.json({ type: 'message', role: 'assistant', model: 'claude-fixture', stop_reason: 'end_turn',
       content: [{ type: 'text', text: JSON.stringify(value) }], usage: { input_tokens: 100, output_tokens: 50 } });
   });
@@ -60,6 +60,23 @@ describe('asynchronous analysis', () => {
       const url = '/v1/owners/owner/repositories/repo/work-items/work/analysis-jobs';
       expect((await http.inject({ method: 'POST', url: url + '/bad-id/review' })).statusCode).toBe(400);
       expect((await http.inject({ method: 'POST', url: url + '/' + randomUUID() + '/review' })).statusCode).toBe(503);
+      const rebaseUrl = `${url}/${randomUUID()}/review/rebase`;
+      const rebaseInput = { expectedReviewVersion: 'a'.repeat(64), actor: 'author' };
+      const missing = await http.inject({ method: 'POST', url: rebaseUrl });
+      expect(missing.statusCode).toBe(400);
+      expect(missing.json().message).toBe('invalid_review_request');
+      for (const [payload, message] of [
+        [{ ...rebaseInput, unexpected: true }, 'invalid_review_request'],
+        [{ ...rebaseInput, expectedReviewVersion: 'A'.repeat(64) }, 'invalid_review_version'],
+        [{ ...rebaseInput, actor: ' ' }, 'invalid_identifier'],
+      ] as const) {
+        const invalid = await http.inject({ method: 'POST', url: rebaseUrl, payload });
+        expect(invalid.statusCode).toBe(400);
+        expect(invalid.json().message).toBe(message);
+      }
+      expect((await http.inject({ method: 'POST', url: rebaseUrl, payload: rebaseInput })).statusCode).toBe(503);
+      expect((await http.inject({ method: 'POST', url: rebaseUrl, payload: rebaseInput,
+        headers: { origin: 'https://foreign.example' } })).statusCode).toBe(403);
       const preview = await http.inject({ method: 'POST', url: url + '/preview', payload: body });
       expect(preview.statusCode).toBe(201);
       expect(preview.json().externalRequests).toBe(0);
@@ -181,6 +198,133 @@ describe('asynchronous analysis', () => {
       await db.close();
     }
   });
+  it.runIf(Boolean(process.env.GIT_ANALYZE_TEST_DATABASE_URL))('rebases a scoped review once and preserves its history and user drafts', async () => {
+    const databaseUrl = process.env.GIT_ANALYZE_TEST_DATABASE_URL!;
+    const db = createDatabase(databaseUrl);
+    const store = new AnalysisJobStore(db.db.$client);
+    const app = await buildApp(loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', DATABASE_URL: databaseUrl }));
+    const ownerId = randomUUID();
+    const scope = { ownerId, repositoryId: 'repo', workItemId: 'work' };
+    try {
+      const http = app.getHttpAdapter().getInstance();
+      const body = await fixture();
+      const workUrl = `/v1/owners/${ownerId}/repositories/repo/work-items/work`;
+      const jobUrl = (id: string) => `${workUrl}/analysis-jobs/${id}/review`;
+      const rebase = (id: string, expectedReviewVersion: string, actor = 'reviewer') => http.inject({ method: 'POST',
+        url: `${jobUrl(id)}/rebase`, payload: { expectedReviewVersion, actor } });
+      const edit = (expectedReviewVersion: string, actions: ReviewAction[]) => http.inject({ method: 'POST',
+        url: `${workUrl}/review`, payload: { expectedReviewVersion, actor: 'author', changes: { schemaVersion: 1, actions } } });
+      const resume = (version: string) => http.inject({ method: 'GET',
+        url: `${workUrl}/resume?claim=implementation-1&claim=result-1&claim=contribution-1&reviewVersion=${version}` });
+      const question = 'Was the result checked?';
+      const initialClaims = { implementation: [{ id: 'implementation-1', text: 'Validated input', status: 'source_supported', evidence: [1] }],
+        missingQuestions: [question] };
+      async function submit(epoch: string, sourceVersion: string, claims: Record<string, unknown> = initialClaims) {
+        const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude', modelEpoch: epoch },
+          bindings: { ...body.bindings, ownerId, sources: body.bindings.sources.map(source => ({ ...source, ownerId, sourceVersion })) } });
+        const job = await store.submit(scope, request.key, request.snapshot);
+        const fetch = claudeResponse(request.prepared.validationPacket, claims);
+        return { job, request, fetch };
+      }
+      async function run({ job, request, fetch }: Awaited<ReturnType<typeof submit>>) {
+        await analysisHandler(store, { ANTHROPIC_API_KEY: 'fixture' }, fetch)({ ...scope, targetId: job.id, inputVersion: request.key });
+        const stored = await store.get(scope, job.id);
+        expect(stored?.status, JSON.stringify(stored?.error)).toBe('succeeded');
+      }
+
+      const original = await submit('v1', 'source-v1');
+      const sameAnalysis = await submit('v2', 'source-v1');
+      const next = await submit('v3', 'source-v2', { ...initialClaims,
+        implementation: [{ ...initialClaims.implementation[0]!, text: 'New model description' }] });
+      const later = await submit('v4', 'source-v3');
+      const collision = await submit('v5', 'source-v4', { implementation: [], results: initialClaims.implementation });
+      const firstVersion = 'a'.repeat(64);
+      const pending = await rebase(next.job.id, firstVersion);
+      expect(pending.statusCode).toBe(409);
+      expect(pending.json().message).toBe('analysis_job_not_succeeded');
+      await Promise.all([original, sameAnalysis, next, later, collision].map(run));
+      const absent = await rebase(next.job.id, firstVersion);
+      expect(absent.statusCode).toBe(404);
+      expect(absent.json().message).toBe('archived_work_not_found');
+      const foreign = await http.inject({ method: 'POST', url: `${jobUrl(next.job.id).replace(ownerId, 'other')}/rebase`,
+        payload: { expectedReviewVersion: firstVersion, actor: 'reviewer' } });
+      expect(foreign.statusCode).toBe(404);
+      expect(foreign.json().message).toBe('analysis_job_not_found');
+
+      const opened = await http.inject({ method: 'POST', url: jobUrl(original.job.id) });
+      expect(opened.statusCode).toBe(200);
+      const initial = opened.json();
+      const edited = await edit(initial.reviewVersion, [
+        { kind: 'edit', claimId: 'implementation-1', text: 'Verified input guard' },
+        { kind: 'confirm', claimId: 'implementation-1', text: 'Verified input guard' },
+        { kind: 'answer', section: 'results', claimId: 'result-1', text: 'Checked the result', question },
+        { kind: 'confirm', claimId: 'result-1', text: 'Checked the result' },
+        { kind: 'answer', section: 'contribution', claimId: 'contribution-1', text: 'Implemented input validation', question: null },
+        { kind: 'confirm', claimId: 'contribution-1', text: 'Implemented input validation' },
+        { kind: 'completion', status: 'completed', completedAt: '2026-10-26T00:00:00Z', note: 'Checked completion' },
+      ]);
+      expect(edited.statusCode).toBe(201);
+      const approved = edited.json();
+      expect(approved.review).toMatchObject({ completion: { status: 'completed' }, analysis: { missingQuestions: [] } });
+      expect((await resume(approved.reviewVersion)).statusCode).toBe(200);
+      const unchanged = await rebase(sameAnalysis.job.id, approved.reviewVersion);
+      expect(unchanged.statusCode).toBe(409);
+      expect(unchanged.json().message).toBe('review_analysis_unchanged');
+      const stale = await rebase(next.job.id, initial.reviewVersion);
+      expect(stale.statusCode).toBe(409);
+      expect(stale.json().message).toBe('review_version_changed');
+      const movedClaim = await rebase(collision.job.id, approved.reviewVersion);
+      expect(movedClaim.statusCode).toBe(422);
+      expect(movedClaim.json().message).toBe('review_changes_rejected');
+
+      const [first, second] = await Promise.all([rebase(next.job.id, approved.reviewVersion), rebase(next.job.id, approved.reviewVersion)]);
+      expect([first.statusCode, second.statusCode]).toEqual([200, 200]);
+      const rebased = first.json();
+      expect(second.json()).toEqual(rebased);
+      expect(first.headers['cache-control']).toBe('no-store');
+      expect(rebased).toMatchObject({ scope, reviewRevision: 3, externalRequests: 0, review: {
+        completion: null, answers: approved.review.answers,
+        analysis: { missingQuestions: [question],
+          implementation: [{ id: 'implementation-1', text: 'Verified input guard', status: 'inferred', evidence: [] }],
+          results: [{ id: 'result-1', text: 'Checked the result', status: 'inferred', evidence: [] }] },
+      } });
+      expect(rebased.evidence).toEqual(next.request.prepared.validationPacket);
+      expect(rebased.review.confirmations).toEqual(approved.review.confirmations.map((record: object) => ({ ...record, status: 'revoked' })));
+      expect(rebased.review.events.slice(0, -1)).toEqual(approved.review.events);
+      expect(rebased.review.events.at(-1)).toMatchObject({ actor: 'reviewer', action: { kind: 'rebase' } });
+      expect((await resume(approved.reviewVersion)).statusCode).toBe(409);
+      expect((await resume(rebased.reviewVersion)).statusCode).toBe(422);
+      expect((await rebase(next.job.id, approved.reviewVersion, 'other reviewer')).statusCode).toBe(409);
+      expect((await rebase(later.job.id, approved.reviewVersion)).statusCode).toBe(409);
+
+      const [rebaseRace, editRace] = await Promise.all([rebase(later.job.id, rebased.reviewVersion),
+        edit(rebased.reviewVersion, [{ kind: 'edit', claimId: 'implementation-1', text: 'Concurrent edit' }])]);
+      const won = rebaseRace.statusCode === 200 ? rebaseRace : editRace;
+      expect([rebaseRace.statusCode, editRace.statusCode]).toEqual(rebaseRace.statusCode === 200 ? [200, 409] : [409, 201]);
+      expect(won.json().reviewRevision).toBe(4);
+      expect((await rebase(next.job.id, approved.reviewVersion)).json()).toEqual(rebased);
+      const detail = await http.inject({ method: 'GET', url: workUrl });
+      expect(detail.json().reviewVersion).toBe(won.json().reviewVersion);
+      const fromPreviousAnalysis = await rebase(original.job.id, detail.json().reviewVersion);
+      expect(fromPreviousAnalysis.statusCode).toBe(200);
+      expect(fromPreviousAnalysis.json()).toMatchObject({ reviewRevision: 5, evidence: initial.evidence, externalRequests: 0 });
+
+      const { rows } = await db.db.$client.query(`SELECT r.revision, r.version, r.previous_version, r.snapshot_version, r.payload->'state' AS review
+        FROM work_review_versions r JOIN work_items w ON w.id=r.work_item_id JOIN owners o ON o.id=w.owner_id
+        WHERE o.external_id=$1 ORDER BY r.revision`, [ownerId]);
+      expect(rows.map(row => row.revision)).toEqual([1, 2, 3, 4, 5]);
+      expect(rows.map(row => row.previous_version)).toEqual([null, initial.reviewVersion, approved.reviewVersion, rebased.reviewVersion,
+        detail.json().reviewVersion]);
+      expect(rows[1]?.review).toEqual(approved.review);
+      expect(rows[2]?.snapshot_version).not.toBe(rows[1]?.snapshot_version);
+      expect(rows[4]?.snapshot_version).toBe(rows[0]?.snapshot_version);
+      for (const result of [original, sameAnalysis, next, later, collision]) expect(result.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await app.close();
+      await db.db.$client.query('DELETE FROM analysis_jobs WHERE owner_id=$1', [ownerId]);
+      await db.close();
+    }
+  }, 15_000);
   it.runIf(Boolean(process.env.GIT_ANALYZE_TEST_DATABASE_URL))('deduplicates DB submissions, isolates scopes and recovers abandoned executions', async () => {
     const db = createDatabase(process.env.GIT_ANALYZE_TEST_DATABASE_URL!);
     const store = new AnalysisJobStore(db.db.$client);

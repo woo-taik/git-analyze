@@ -5,8 +5,8 @@ import { ConflictException, HttpException, Inject, Injectable, NotFoundException
   ServiceUnavailableException, UnprocessableEntityException, type OnModuleDestroy } from '@nestjs/common';
 import type { AppConfig } from '@git-analyze/config';
 import type { ReviewAction } from '@git-analyze/core';
-import { startJobReview, updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError,
-  ArchiveReviewExistsError, type AnalysisJobRow, type ArchivedReviewSnapshot } from '@git-analyze/database';
+import { rebaseArchivedReview, startJobReview, updateArchivedReview, ArchiveReviewConflictError, ArchiveReviewChangesError,
+  ArchiveReviewExistsError, ArchiveReviewSameAnalysisError, type AnalysisJobRow, type ArchivedReviewSnapshot } from '@git-analyze/database';
 import { restoreJobAnalysis } from '@git-analyze/providers';
 
 export const ARCHIVE_CONFIG = Symbol('ARCHIVE_CONFIG');
@@ -34,6 +34,7 @@ export class WorkArchiveService implements OnModuleDestroy {
     catch (error) {
       if (error instanceof ArchiveNotFoundError) throw new NotFoundException('archived_work_not_found');
       if (error instanceof ArchiveReviewExistsError) throw new ConflictException('review_already_exists');
+      if (error instanceof ArchiveReviewSameAnalysisError) throw new ConflictException('review_analysis_unchanged');
       if (error instanceof ArchiveReviewConflictError) throw new ConflictException('review_version_changed');
       if (error instanceof ArchiveReviewChangesError) throw new UnprocessableEntityException('review_changes_rejected');
       if (error instanceof ResumeOutputError) throw new UnprocessableEntityException(error.code);
@@ -66,6 +67,14 @@ export class WorkArchiveService implements OnModuleDestroy {
     return this.query(async db => {
       const analysis = await restoreJobAnalysis(job.request, job.request_key, job.result);
       const current = await startJobReview(db, scope, job.id, analysis);
+      return { ...reviewDetail(scope, current), externalRequests: 0 };
+    });
+  }
+
+  rebaseReview(scope: ArchiveScope, job: AnalysisJobRow, expectedVersion: string, actor: string) {
+    return this.query(async db => {
+      const analysis = await restoreJobAnalysis(job.request, job.request_key, job.result);
+      const current = await rebaseArchivedReview(db, scope, job.id, analysis, expectedVersion, actor);
       return { ...reviewDetail(scope, current), externalRequests: 0 };
     });
   }
