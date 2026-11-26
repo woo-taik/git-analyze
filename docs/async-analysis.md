@@ -34,6 +34,7 @@ CLI를 사용할 때는 성공 응답의 result를 analysis.json으로 저장하
 pg-boss 전달 재시도는 2회, 5초 간격이며 DB claim은 한 실행만 허용한다.
 프로세스 종료나 결과 저장 실패 후 5분 lease가 만료되면 needs_input/execution_outcome_unknown으로 전환한다.
 외부 요청 이후 오류도 needs_input으로 남기고 자동 재호출하지 않는다. usage가 null이어도 무과금을 뜻하지 않는다.
+스키마 거부의 작업 조회 응답은 `error.validationCode`, `error.validationPath`, `error.validationRule`에 정해진 진단 값만 제공한다. 예를 들어 중복 질문은 `invalid_schema`, `/missingQuestions`, `uniqueItems`로 표시한다. 새 Claude 요청은 v6를 쓰며 이전에 승인해 저장한 작업은 당시 프롬프트와 요청 키를 사용한다.
 공급자 키 누락은 전송 전이므로 키를 설정한 뒤 POST <공통 경로>/:jobId/retry에 confirmedRequestKey를 보내 재접수할 수 있다.
 그 외 실패의 retry는 409다. 공급자 사용 내역을 확인하고 원인을 해결한 뒤 필요한 경우 새 modelEpoch로 새 요청을 명시적으로 만든다.
 같은 요청을 다시 제출하는 것만으로 실패를 지우거나 유료 분석을 반복하지 않는다.

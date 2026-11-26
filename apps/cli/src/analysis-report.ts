@@ -88,7 +88,7 @@ export function renderAnalysisMarkdown(value: WorkItemAnalysis, source: Source, 
   const impact = analysisImpactSummary(value);
   if (!reviewed) return compactReport(value, impact);
   const impactFormat = promptVersion === CLAUDE_ANALYSIS_PROMPT_VERSION || promptVersion === CLAUDE_IMPACT_PROMPT_VERSION
-    || promptVersion === 'claude-analysis-prompt-v4';
+    || promptVersion === 'claude-analysis-prompt-v4' || promptVersion === 'claude-analysis-prompt-v5';
   const lines = ['# 작업 분석 초안', '',
     ...(impactFormat ? [`> **효과 한 줄** — ${impact ? text(impact) : '근거로 확인된 효과 없음'}`, ''] : []),
     ...analysisSourceLines(source), `- 분석 입력 버전: ${value.inputVersion}`,

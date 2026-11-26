@@ -1,6 +1,6 @@
 import type { EvidencePacket, LlmAnalysisRequestOptions } from '@git-analyze/core';
-import { ClaudeAnalysisProvider } from './claude-analysis.js';
-import { OpenAiAnalysisProvider } from './openai-analysis.js';
+import { ClaudeAnalysisError, ClaudeAnalysisProvider } from './claude-analysis.js';
+import { OpenAiAnalysisError, OpenAiAnalysisProvider } from './openai-analysis.js';
 import { object, identity } from './analysis-input.js';
 import { validateAnalysisResult, type AnalysisSettings } from './analysis-contract.js';
 import { prepareAnalysisRequest } from './analysis-runtime.js';
@@ -29,4 +29,11 @@ export async function executeAnalysis(packet: EvidencePacket, settings: Analysis
     fetch ? { fetch } : {});
   return validateAnalysisResult(await provider.analyze(packet, { maxInputTokens: settings.maxInputTokens,
     maxOutputTokens: settings.maxOutputTokens, transmission }), prepared, settings);
+}
+
+/** Persist the public failure fields without serializing provider errors or response payloads. */
+export function analysisProviderFailure(error: unknown) {
+  if (!(error instanceof ClaudeAnalysisError || error instanceof OpenAiAnalysisError)) return null;
+  const { code, stage, usage, httpStatus, validationCode, validationPath, validationRule, countedInputTokens } = error;
+  return { code, stage, usage, httpStatus, validationCode, validationPath, validationRule, countedInputTokens };
 }

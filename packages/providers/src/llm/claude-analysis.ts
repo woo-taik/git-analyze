@@ -9,7 +9,7 @@ import { prepareAnalysisTransmission } from './transmission.js';
 const LEGACY_PROMPT_VERSION = 'claude-analysis-prompt-v1';
 export const PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v2';
 export const CLAUDE_IMPACT_PROMPT_VERSION = 'claude-analysis-prompt-v3';
-export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v5';
+export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v6';
 export const CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION = 'claude-analysis-wire-v2';
 const CLAUDE_V2_INSTRUCTIONS = [
   ANALYSIS_INSTRUCTIONS.replace(EXACT_CITATION_INSTRUCTION,
@@ -19,11 +19,12 @@ const CLAUDE_V2_INSTRUCTIONS = [
   'Keep data freshness, cache retention, and refetch behavior separate. Never equate immediate staleness with disabled caching. If semantics are unproven, report the setting itself and leave any important effect as a question.',
   'Keep code changes, tests added, tests run and observed outcomes in separate claims. Do not combine an observed change with an inferred benefit in a source_supported claim.',
 ].join('\n');
+const CLAUDE_IMPACT_BASE_INSTRUCTIONS = CLAUDE_V2_INSTRUCTIONS.replace(
+  'Do not invent metrics, motives, alternatives, test success, deployment, completion or personal contribution.',
+  'Do not invent metrics, motives, historical deliberation, test success, deployment, completion or personal contribution.',
+);
 const CLAUDE_ANALYSIS_INSTRUCTIONS = [
-  CLAUDE_V2_INSTRUCTIONS.replace(
-    'Do not invent metrics, motives, alternatives, test success, deployment, completion or personal contribution.',
-    'Do not invent metrics, motives, historical deliberation, test success, deployment, completion or personal contribution.',
-  ),
+  CLAUDE_IMPACT_BASE_INSTRUCTIONS,
   WORK_ITEM_IMPACT_INSTRUCTIONS,
 ].join('\n');
 const instructionsByVersion = new Map([
@@ -35,18 +36,34 @@ const instructionsByVersion = new Map([
     'Use problem-1 for the user-visible problem, cause-1 for the concrete mechanism, alternative-1 and alternative-2 for short option names, tradeoff-1 for the main gain and cost, decision-1 for the adopted option and its documented reason, and effect-1 for the resulting observable behavior. Keep secondary changes out of these slots.',
     'Use metric-1 for the headline: name the change and its quantified impact. An evidenced delta alone is sufficient. Keep its unit, qualifier and measurement basis; never reverse-engineer before/after totals. If no quantity is supported, use the missing metric convention and let effect-1 describe the verified outcome.',
   ].join('\n')],
-  [CLAUDE_ANALYSIS_PROMPT_VERSION, [CLAUDE_ANALYSIS_INSTRUCTIONS,
+  ['claude-analysis-prompt-v5', [CLAUDE_ANALYSIS_INSTRUCTIONS,
     'The CLI prints one or two short Korean sentences in total. Summarize one decision, without section labels, arrows, line breaks or a list of stages. Keep detailed claims in their JSON sections.',
     'For metric-1 write the chosen change and the most meaningful supported effect in one sentence. Keep the unit, qualifier and measurement basis of any measured delta; do not invent before or after totals. If no metric is supported, leave metric-1 missing and use effect-1 for the verified behavior.',
     'For decision-1 write one complementary sentence connecting the problem or cause to the choice. Include the most relevant alternative and trade-off only when evidenced. Avoid repeating the headline. Keep inferred comparisons in alternatives.',
+  ].join('\n')],
+  [CLAUDE_ANALYSIS_PROMPT_VERSION, [CLAUDE_IMPACT_BASE_INSTRUCTIONS,
+    'The CLI prints one or two short Korean sentences in total. Center the headline and optional complementary sentence on one decision, without labels or line breaks. Put secondary details in the JSON sections.',
+    'Use problem-1 for the observed symptom and cause-1 for the mechanism. Mark unverified causes inferred. For decision-1 name the chosen change and connect it to the problem or cause when documented. Avoid restating the headline.',
+    'In alternatives, use alternative-1, alternative-2, ... for options and tradeoff-1, tradeoff-2, ... for their gains and costs. Compare only options for the same decision. Mark deduced options and trade-offs inferred, never historical deliberation.',
+    'Use metric-1 only for a meaningful quantity directly tied to the current change. For a measured before/after comparison, cite both values for the same measured target, unit, scope and comparable conditions. A documented delta alone is sufficient; never reconstruct missing totals. State what was measured, its unit and the measurement context, including the environment or date when documented. If evidence records only one local run, say so in the sentence and do not imply production or repeated results.',
+    'A count derived from code may be used only when the selected evidence shows both the old and new counts of a relevant behavior, such as the fields passed to a link. Name the counted item and give both counts; do not infer zero from missing context. Keep incidental counts and counts of commits, lines or tests out of the headline.',
+    'Keep a generic library benchmark, estimated size, earlier unrelated measurement and rollout target out of metric-1. If useful, record them with their original target, date or scope in constraints or verification. When the work only documents an earlier experiment, report the documentation change rather than claiming its measured results as impact of the current change.',
+    'If the current change has no supported quantity, give metric-1 status missing with no evidence. Use effect-1 for the observable, source-supported behavior and what it enables. Mark an uncertain effect inferred; do not infer performance, rollout or test execution from code or configuration alone.',
+    'When evidence shows a literal or Unicode range, preserve it or use a name established in the evidence. Do not infer a language or character class from the surrounding context.',
   ].join('\n')],
 ]);
 
 export type ClaudeAnalysisResult = OpenAiAnalysisResult;
 export class ClaudeAnalysisError extends Error {
+  readonly validationPath: string | null;
+  readonly validationRule: AnalysisValidationError['rule'];
+
   constructor(readonly code: OpenAiAnalysisErrorCode, readonly stage: 'count' | 'analysis', readonly usage: LlmUsage | null = null,
-    readonly httpStatus: number | null = null, readonly validationCode: string | null = null, readonly countedInputTokens: number | null = null) {
+    readonly httpStatus: number | null = null, readonly validationCode: string | null = null, readonly countedInputTokens: number | null = null,
+    validation?: AnalysisValidationError) {
     super(`Claude analysis failed: ${code} (${stage})`); this.name = 'ClaudeAnalysisError';
+    this.validationPath = validation?.path ?? null;
+    this.validationRule = validation?.rule ?? null;
   }
 }
 export function prepareClaudeAnalysisRequest(packet: EvidencePacket, model: string, transmission: LlmAnalysisRequestOptions['transmission'],
@@ -161,7 +178,10 @@ export class ClaudeAnalysisProvider implements LlmAnalysisProvider {
       const analysisJson = prepared.promptVersion === LEGACY_PROMPT_VERSION ? rawText : expandCitations(rawText, prepared.validationPacket);
       value = parseWorkItemAnalysis(analysisJson, { packet: prepared.validationPacket });
     }
-    catch (error) { throw new ClaudeAnalysisError('invalid_analysis', 'analysis', usage, null, error instanceof AnalysisValidationError ? error.code : null); }
+    catch (error) {
+      const validation = error instanceof AnalysisValidationError ? error : undefined;
+      throw new ClaudeAnalysisError('invalid_analysis', 'analysis', usage, null, validation?.code ?? null, countedInputTokens, validation);
+    }
     return { value, usage, request: { requestedModel: this.config.model, promptVersion: prepared.promptVersion,
       analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION, wireSchemaVersion: prepared.wireSchemaVersion,
       countedInputTokens, maxInputTokens, maxOutputTokens, contextWindowTokens: this.config.contextWindowTokens, transmission: prepared.receipt } };

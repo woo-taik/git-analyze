@@ -43,8 +43,9 @@ function rejects(value: unknown, code: AnalysisValidationError['code'], confirma
     validateWorkItemAnalysis(value, { packet, ...(confirmations ? { confirmations } : {}) });
   } catch (error) {
     expect(error).toBeInstanceOf(AnalysisValidationError);
-    expect((error as AnalysisValidationError).code).toBe(code);
-    return;
+    const diagnostic = error as AnalysisValidationError;
+    expect(diagnostic.code).toBe(code);
+    return diagnostic;
   }
   throw new Error(`Expected validation failure: ${code}`);
 }
@@ -98,6 +99,21 @@ describe('structured analysis output', () => {
     rejects({ ...valid(), implementation: Array.from({ length: 33 }, (_, index) => ({ ...sourceClaim(), id: `claim-${index}` })) }, 'invalid_schema');
   });
 
+  it('identifies the schema rule and field for the claim status that was supplied', () => {
+    const ref = packet.excerpts[0]!.reference;
+    const inferred = { ...sourceClaim(), status: 'inferred', evidence: [ref, ref] };
+    expect(rejects({ ...valid(), implementation: [sourceClaim(), inferred] }, 'invalid_schema'))
+      .toMatchObject({ path: '/implementation/1/evidence', rule: 'uniqueItems' });
+    expect(rejects({ ...valid(), implementation: [{ ...inferred, evidence: [ref], text: ' \t' }] }, 'invalid_schema'))
+      .toMatchObject({ path: '/implementation/0/text', rule: 'pattern' });
+    const missing = { ...valid() } as Record<string, unknown>;
+    delete missing.results;
+    expect(rejects(missing, 'invalid_schema')).toMatchObject({ path: '/results', rule: 'required' });
+    const missingLocator = { sourceRecordId: ref.sourceRecordId, sourceVersion: ref.sourceVersion };
+    expect(rejects({ ...valid(), implementation: [{ ...sourceClaim(), evidence: [missingLocator] }] }, 'invalid_schema'))
+      .toMatchObject({ path: '/implementation/0/evidence/0/locator', rule: 'required' });
+  });
+
   it('rejects different work items, stale inputs and duplicate IDs across analysis sections', () => {
     rejects({ ...valid(), workItemId: 'other' }, 'work_item_mismatch');
     rejects({ ...valid(), inputVersion: 'f'.repeat(64) }, 'input_version_mismatch');
@@ -136,14 +152,20 @@ describe('structured analysis output', () => {
 
   it('reports bounded diagnostics without quoting model or source contents', () => {
     const secret = 'sentinel-private-content';
-    for (const value of [{ ...valid(), [secret]: 'value' },
-      { ...valid(), implementation: [{ ...sourceClaim(), text: '', evidence: [], [secret]: secret }] }]) {
-      try { validateWorkItemAnalysis(value, { packet }); }
-      catch (error) {
-        expect((error as Error).message).not.toContain(secret);
-        expect((error as Error).message).toContain('invalid_schema');
-      }
+    for (const [value, path] of [
+      [{ ...valid(), [secret]: secret }, '/'],
+      [{ ...valid(), implementation: [{ ...sourceClaim(), status: 'inferred', [secret]: secret }] }, '/implementation/0'],
+      [{ ...valid(), implementation: [{ ...sourceClaim(), evidence: [{ ...packet.excerpts[0]!.reference, [secret]: secret }] }] },
+        '/implementation/0/evidence/0'],
+    ]) {
+      const error = rejects(value, 'invalid_schema');
+      expect(error).toMatchObject({ path, rule: 'additionalProperties' });
+      expect(error.message).toContain('invalid_schema');
+      expect(error.message + JSON.stringify(error)).not.toContain(secret);
     }
+    const unsafePath = new AnalysisValidationError('invalid_schema', `/implementation/0/${secret}`);
+    expect(unsafePath).toMatchObject({ path: '/', rule: null });
+    expect(unsafePath.message).not.toContain(secret);
   });
 
   it('rejects malformed, fenced, truncated, refusal and oversized responses', () => {

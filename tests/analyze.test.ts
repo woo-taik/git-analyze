@@ -315,6 +315,32 @@ describe('analysis CLI assembly', () => {
     expect(retry.requests).toHaveLength(2);
   });
 
+  it('reports only approved schema diagnostic fields in JSON and Markdown', async () => {
+    const paths = runPaths();
+    const network = harness(({ path, body }) => {
+      if (path.endsWith('/input_tokens')) return Response.json({ object: 'response.input_tokens', input_tokens: 1200 });
+      const { workItemId, inputVersion } = JSON.parse(body.input[0].content);
+      const value = { workItemId, inputVersion, problem: [], constraints: [], alternatives: [], decision: [],
+        implementation: [], verification: [], contribution: [], missingQuestions: [],
+        results: [{ id: 'MODEL_VALUE_MUST_STAY_LOCAL', text: '모형 결과', status: 'inferred', evidence: [],
+          MODEL_FIELD_MUST_STAY_LOCAL: true }] };
+      return Response.json({ model: 'fixture-revision', status: 'completed',
+        output: [{ type: 'message', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: JSON.stringify(value) }] }],
+        usage: { input_tokens: 1200, output_tokens: 300, total_tokens: 1500, input_tokens_details: { cached_tokens: 0 } } });
+    });
+    await expect(executeAnalyze(args(paths), { ...network, env })).rejects.toThrow('invalid_analysis');
+    const failure = await readFile(join(paths.output, 'failure.json'), 'utf8');
+    const markdown = await readFile(join(paths.output, 'failure.md'), 'utf8');
+    expect(JSON.parse(failure).error).toMatchObject({ code: 'invalid_analysis', stage: 'analysis',
+      validationCode: 'invalid_schema', validationPath: '/results/0', validationRule: 'additionalProperties',
+      countedInputTokens: 1200, usage: { outputTokens: 300 } });
+    expect(markdown).toContain('/results/0');
+    expect(markdown).toContain('additionalProperties');
+    expect(failure + markdown).not.toMatch(/MODEL_(FIELD|VALUE)_MUST_STAY_LOCAL|FIXTURE_API_KEY_DO_NOT_SAVE/);
+    expect(network.requests).toHaveLength(2);
+  });
+
   it('disables cache reads and writes only when explicitly requested', async () => {
     const paths = runPaths();
     const network = harness();

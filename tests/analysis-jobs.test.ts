@@ -121,16 +121,46 @@ describe('asynchronous analysis', () => {
       await handler(payload); await handler(payload);
       expect(row.status).toBe('needs_input');
       expect(JSON.stringify(row.error)).not.toContain('SECRET');
-      expect(fetch.mock.calls.length).toBe('OPENAI_API_KEY' in env ? 1 : 0);
+      const configured = 'OPENAI_API_KEY' in env;
+      expect(row.error).toMatchObject(configured ? { code: 'transport_error', stage: 'count', usage: null,
+        validationCode: null, validationPath: null, validationRule: null, countedInputTokens: null }
+        : { code: 'provider_key_missing', usage: null });
+      expect(fetch).toHaveBeenCalledTimes(configured ? 1 : 0);
     }
   });
-  it.each(['claude-analysis-prompt-v2', 'claude-analysis-prompt-v3', 'claude-analysis-prompt-v4'])('executes the prompt approved at submission (%s)', async promptVersion => {
+  it('stores a safe schema failure without retaining unknown model fields or retrying generation', async () => {
+    const body = await fixture();
+    const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude' } });
+    const { row, store, payload } = memoryStore(request.snapshot, request.key);
+    const unknownKey = 'PRIVATE_MODEL_FIELD';
+    const unknownValue = 'PRIVATE_MODEL_VALUE';
+    const fetch = claudeResponse(request.prepared.validationPacket, { [unknownKey]: unknownValue });
+    const run = analysisHandler(store, { ANTHROPIC_API_KEY: 'fixture-key' }, fetch);
+    await run(payload);
+    await run(payload);
+    expect(row).toMatchObject({ status: 'needs_input', result: null, error: {
+      code: 'invalid_analysis', stage: 'analysis', httpStatus: null, countedInputTokens: 100,
+      validationCode: 'invalid_schema', validationPath: '/', validationRule: 'additionalProperties',
+      usage: { provider: 'anthropic', inputTokens: 100, outputTokens: 50 },
+    } });
+    expect(JSON.stringify(row.error)).not.toContain(unknownKey);
+    expect(JSON.stringify(row.error)).not.toContain(unknownValue);
+    expect(store.finish).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    'claude-analysis-prompt-v2', 'claude-analysis-prompt-v3', 'claude-analysis-prompt-v4', 'claude-analysis-prompt-v5',
+  ])('executes the prompt approved at submission (%s)', async promptVersion => {
     const body = await fixture();
     const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude' } });
     const { promptVersion: _storedVersion, ...legacySnapshot } = request.snapshot;
     const prepared = prepareAnalysisRequest(request.loaded.packet, request.settings, request.transmission, promptVersion);
-    const key = analysisCacheKey(prepared, request.settings);
+    // This key was stored by v5 before new submissions started using v6.
+    const key = promptVersion === 'claude-analysis-prompt-v5'
+      ? '70b0d401ddec6c2feaf528bd64da718162a4169e749773ba42eb860115c195eb'
+      : analysisCacheKey(prepared, request.settings);
     const snapshot = promptVersion === 'claude-analysis-prompt-v2' ? legacySnapshot : { ...request.snapshot, promptVersion };
+    const approved = await prepareAnalysisSubmission(snapshot, key);
     const { row, store, payload } = memoryStore(snapshot, key);
     const fetch = claudeResponse(prepared.validationPacket);
     await analysisHandler(store, { ANTHROPIC_API_KEY: 'fixture-key' }, fetch)(payload);
@@ -140,9 +170,49 @@ describe('asynchronous analysis', () => {
     expect(restored.request.promptVersion).toBe(promptVersion);
     expect(restored.packet).toEqual(prepared.validationPacket);
     await expect(restoreJobAnalysis(row.request, key, { ...row.result, sentInput: {} })).rejects.toThrow();
-    expect(fetch).toHaveBeenCalledTimes(2);
-    for (const [, init] of fetch.mock.calls) {
-      expect(JSON.parse(init!.body as string).system).toBe(prepared.body.system);
+    expect(fetch.mock.calls.map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+      approved.preview.countRequest, approved.preview.analysisRequest,
+    ]);
+  });
+  it.runIf(Boolean(process.env.GIT_ANALYZE_TEST_DATABASE_URL))('reports safe schema diagnostics from an invalid Claude result', async () => {
+    const databaseUrl = process.env.GIT_ANALYZE_TEST_DATABASE_URL!;
+    const db = createDatabase(databaseUrl);
+    const store = new AnalysisJobStore(db.db.$client);
+    const app = await buildApp(loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', DATABASE_URL: databaseUrl }));
+    const ownerId = randomUUID();
+    try {
+      const http = app.getHttpAdapter().getInstance();
+      const body = await fixture();
+      const scope = { ownerId, repositoryId: 'repo', workItemId: 'work' };
+      const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude' },
+        bindings: { ...body.bindings, ownerId, sources: body.bindings.sources.map(source => ({ ...source, ownerId })) } });
+      const job = await store.submit(scope, request.key, request.snapshot);
+      const value = 'PRIVATE_MODEL_QUESTION';
+      const fetch = claudeResponse(request.prepared.validationPacket, { missingQuestions: [value, value] });
+      const run = analysisHandler(store, { ANTHROPIC_API_KEY: 'fixture-key' }, fetch);
+      const payload = { ownerId, repositoryId: scope.repositoryId, targetId: job.id, inputVersion: request.key };
+      await run(payload);
+
+      const url = `/v1/owners/${ownerId}/repositories/repo/work-items/work/analysis-jobs/${job.id}`;
+      const response = await http.inject({ method: 'GET', url });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ jobId: job.id, requestKey: request.key, status: 'needs_input', result: null,
+        error: { code: 'invalid_analysis', stage: 'analysis', httpStatus: null, countedInputTokens: 100,
+          validationCode: 'invalid_schema', validationPath: '/missingQuestions', validationRule: 'uniqueItems',
+          usage: { provider: 'anthropic', inputTokens: 100, outputTokens: 50 },
+        } });
+      expect(response.body).not.toContain(value);
+      expect((await store.get(scope, job.id))?.error).toEqual(response.json().error);
+      const retry = await http.inject({ method: 'POST', url: `${url}/retry`, payload: { confirmedRequestKey: request.key } });
+      expect(retry.statusCode).toBe(409);
+      expect(retry.json().message).toBe('execution_not_safe_to_retry');
+      await run(payload);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect((await http.inject({ method: 'GET', url })).json()).toEqual(response.json());
+    } finally {
+      await app.close();
+      await db.db.$client.query('DELETE FROM analysis_jobs WHERE owner_id=$1', [ownerId]);
+      await db.close();
     }
   });
   it.runIf(Boolean(process.env.GIT_ANALYZE_TEST_DATABASE_URL))('starts one review from a scoped job and preserves subsequent edits on replay', async () => {

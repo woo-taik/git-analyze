@@ -6,6 +6,7 @@ import { buildLocalEvidence, toEvidencePacket, type EvidencePacket } from '../pa
 import { CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION, ClaudeAnalysisProvider,
   prepareClaudeAnalysisRequest } from '../packages/providers/src/index.js';
 import { executeAnalyze } from '../apps/cli/src/analyze.js';
+import { renderAnalysisMarkdown } from '../apps/cli/src/analysis-report.js';
 import { executeReview } from '../apps/cli/src/review.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
 import { analysisCacheKey, hash } from '../apps/cli/src/analysis-cache.js';
@@ -68,6 +69,37 @@ afterAll(async () => {
 });
 
 describe('Claude analysis adapter and CLI default', () => {
+  it('preserves the released v5 request body and cache key while selecting v6 for new requests', () => {
+    const settings = { provider: 'claude' as const, model: config.model, modelEpoch: 'fixture-v1', contextWindowTokens: 16000,
+      maxInputTokens: 12000, maxOutputTokens: 6000, timeoutMs: 60000 };
+    const transmission = options().transmission;
+    const v5 = prepareClaudeAnalysisRequest(packet, settings.model, transmission, 'claude-analysis-prompt-v5');
+    const v6 = prepareClaudeAnalysisRequest(packet, settings.model, transmission);
+    // Fingerprints recorded from the released v5 request for this fixture.
+    expect(hash(v5.body)).toBe('53882f8981e30d9484b3a5da488cb6da28287e5018f72001b4220113d9f5df6b');
+    expect(analysisCacheKey(v5, settings)).toBe('c22ef686d00f4bf9e8fe49762d5373573531a1d972ff4d8e3cdcce19cf94ddf5');
+    expect(v6.promptVersion).toBe('claude-analysis-prompt-v6');
+    expect(v6.wireSchemaVersion).toBe(v5.wireSchemaVersion);
+    expect(v6.body.messages).toEqual(v5.body.messages);
+    expect(v6.body.output_config).toEqual(v5.body.output_config);
+    expect(analysisCacheKey(v6, settings)).not.toBe(analysisCacheKey(v5, settings));
+  });
+
+  it('asks v6 to ground the headline quantity or fall back to observable behavior', () => {
+    const { body: { system } } = prepareClaudeAnalysisRequest(packet, config.model, options().transmission);
+    expect(system).toContain('directly tied to the current change');
+    expect(system).toContain('same measured target, unit, scope and comparable conditions');
+    expect(system).toContain('A documented delta alone is sufficient; never reconstruct missing totals');
+    expect(system).toContain('If evidence records only one local run, say so in the sentence');
+    expect(system).toContain('both the old and new counts of a relevant behavior');
+    expect(system).toContain('do not infer zero from missing context');
+    expect(system).toContain('Keep a generic library benchmark, estimated size, earlier unrelated measurement and rollout target out of metric-1');
+    expect(system).toContain('When the work only documents an earlier experiment, report the documentation change');
+    expect(system).toContain('give metric-1 status missing with no evidence. Use effect-1 for the observable, source-supported behavior');
+    expect(system).toContain('Do not infer a language or character class');
+    expect(system).not.toContain('give the name, BEFORE numeral, AFTER numeral');
+  });
+
   it('uses Anthropic count and generation with identical full sanitized inputs and schema, then validates output and inclusive usage', async () => {
     const { provider, requests } = harness();
     const result = await provider.analyze(packet, options());
@@ -184,26 +216,51 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(data.analysisRequest).not.toHaveProperty('max_output_tokens');
 
     expect(JSON.parse(data.countRequest.messages[0].content).excerpts[0].citationNumber).toBe(1);
-    expect(data.countRequest.system).toContain('문제 → 원인 → 해결책들 → 트레이드오프 → 선택 → 효과');
     const currentKey = saved.cache.key;
     const legacyFile = join(root, 'legacy-analysis.json');
     expect(data.countRequest.system).toContain('one or two short Korean sentences in total');
     for (const [legacyVersion, citationNumber] of [['claude-analysis-prompt-v1', undefined], ['claude-analysis-prompt-v2', 1],
-      ['claude-analysis-prompt-v3', 1], ['claude-analysis-prompt-v4', 1]] as const) {
+      ['claude-analysis-prompt-v3', 1], ['claude-analysis-prompt-v4', 1], ['claude-analysis-prompt-v5', 1]] as const) {
       const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
       expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBe(citationNumber);
-      expect(legacy.body.system).not.toContain('one or two short Korean sentences in total');
       const legacyKey = analysisCacheKey(legacy, saved.settings);
       expect(legacyKey).not.toBe(currentKey);
       saved.result.request.promptVersion = legacyVersion;
       saved.result.request.wireSchemaVersion = legacy.wireSchemaVersion;
       saved.cache.key = legacyKey;
       await writeFile(legacyFile, JSON.stringify(saved));
-      expect((await loadSavedAnalysis(legacyFile)).baseline).toEqual(restored.baseline);
+      const loaded = await loadSavedAnalysis(legacyFile);
+      expect(loaded.baseline).toEqual(restored.baseline);
+      if (legacyVersion === 'claude-analysis-prompt-v5') {
+        expect(renderAnalysisMarkdown(loaded.baseline.analysis, loaded.source, false, loaded.baseline.packet.complete, true, legacyVersion))
+          .toContain(`> **효과 한 줄** — ${effect}`);
+      }
     }
     saved.result.request.promptVersion = CLAUDE_ANALYSIS_PROMPT_VERSION;
     saved.result.request.wireSchemaVersion = CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION;
     await writeFile(legacyFile, JSON.stringify(saved));
     await expect(loadSavedAnalysis(legacyFile)).rejects.toThrow('cache identity does not match');
+  });
+
+  it('renders the supported change when the metric is missing and a benchmark belongs to another scope', async () => {
+    const effect = '현재 변경에서 입력을 검증하도록 했다.';
+    const network = harness(response => {
+      const value = JSON.parse(response.content[0].text);
+      value.verification = [{
+        id: 'verification-1', text: '별도 라이브러리 비교에서 gzip 차이는 약 14 KB였다.', status: 'source_supported', evidence: [1],
+      }];
+      value.results = [
+        { id: 'metric-1', text: '현재 작업의 전후 측정치는 없다.', status: 'missing', evidence: [] },
+        { id: 'effect-1', text: effect, status: 'source_supported', evidence: [1] },
+      ];
+      value.implementation = [];
+      response.content[0].text = JSON.stringify(value);
+      return response;
+    });
+    const args = ['--input', input, '--bindings', bindings, '--excerpt', packet.excerpts[0]!.id, '--model', 'claude-fixture',
+      '--model-epoch', 'fixture-v6', '--context-window', '16000', '--no-cache', '--output', output()];
+    const result = await executeAnalyze(args, { ...network, env: { ANTHROPIC_API_KEY: config.apiKey } });
+    expect(result).toMatchObject({ impactSummary: effect });
+    expect(await readFile(result.markdownPath, 'utf8')).toBe(`- **${effect}**\n`);
   });
 });

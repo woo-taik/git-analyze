@@ -11,11 +11,17 @@ import { prepareAnalysisTransmission, type AnalysisTransmissionReceipt } from '.
 export type OpenAiAnalysisErrorCode = 'invalid_options' | 'input_budget' | 'context_budget' | 'output_budget'
   | 'http_error' | 'transport_error' | 'timeout' | 'aborted' | 'invalid_response' | 'failed' | 'incomplete' | 'refused' | 'invalid_analysis';
 export class OpenAiAnalysisError extends Error {
+  readonly validationPath: string | null;
+  readonly validationRule: AnalysisValidationError['rule'];
+
   constructor(readonly code: OpenAiAnalysisErrorCode, readonly stage: 'count' | 'analysis',
     readonly usage: LlmUsage | null = null, readonly httpStatus: number | null = null,
-    readonly validationCode: string | null = null, readonly countedInputTokens: number | null = null) {
+    readonly validationCode: string | null = null, readonly countedInputTokens: number | null = null,
+    validation?: AnalysisValidationError) {
     super(`OpenAI analysis failed: ${code} (${stage})`);
     this.name = 'OpenAiAnalysisError';
+    this.validationPath = validation?.path ?? null;
+    this.validationRule = validation?.rule ?? null;
   }
 }
 
@@ -151,8 +157,8 @@ export class OpenAiAnalysisProvider implements LlmAnalysisProvider {
     let value: WorkItemAnalysis;
     try { value = parseWorkItemAnalysis(text.text, { packet: prepared.validationPacket }); }
     catch (error) {
-      if (error instanceof AnalysisValidationError) throw new OpenAiAnalysisError('invalid_analysis', 'analysis', usage, null, error.code);
-      throw new OpenAiAnalysisError('invalid_analysis', 'analysis', usage);
+      const validation = error instanceof AnalysisValidationError ? error : undefined;
+      throw new OpenAiAnalysisError('invalid_analysis', 'analysis', usage, null, validation?.code ?? null, countedInputTokens, validation);
     }
     return { value, usage, request: { requestedModel: this.model, promptVersion: OPENAI_ANALYSIS_PROMPT_VERSION,
       analysisSchemaVersion: ANALYSIS_SCHEMA_VERSION, wireSchemaVersion: OPENAI_ANALYSIS_WIRE_SCHEMA_VERSION,

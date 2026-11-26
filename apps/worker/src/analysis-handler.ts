@@ -1,5 +1,5 @@
 import type { AnalysisJobStore } from '@git-analyze/database';
-import { ClaudeAnalysisError, OpenAiAnalysisError, prepareAnalysisSubmission, executeAnalysis } from '@git-analyze/providers';
+import { analysisProviderFailure, prepareAnalysisSubmission, executeAnalysis } from '@git-analyze/providers';
 import type { JobPayload } from '@git-analyze/core';
 
 export function analysisHandler(store: AnalysisJobStore, env: NodeJS.ProcessEnv = process.env, fetch?: typeof globalThis.fetch) {
@@ -31,10 +31,9 @@ export function analysisHandler(store: AnalysisJobStore, env: NodeJS.ProcessEnv 
         } };
       }
     } catch (error) {
-      const known = error instanceof ClaudeAnalysisError || error instanceof OpenAiAnalysisError;
       outcome = { status: externalStarted ? 'needs_input' : 'failed', result: null,
-        error: known ? { code: error.code, stage: error.stage, usage: error.usage, httpStatus: error.httpStatus }
-          : { code: externalStarted ? 'execution_outcome_unknown' : 'invalid_stored_request', usage: null } };
+        error: analysisProviderFailure(error)
+          ?? { code: externalStarted ? 'execution_outcome_unknown' : 'invalid_stored_request', usage: null } };
     }
     // Persistence failure must not be converted into a model failure or another paid execution.
     await store.finish(row.id, token, outcome.status, outcome.result, outcome.error);

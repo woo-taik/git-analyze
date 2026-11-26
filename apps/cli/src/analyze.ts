@@ -1,8 +1,7 @@
-import { executeAnalysis } from '@git-analyze/providers';
+import { analysisProviderFailure, executeAnalysis } from '@git-analyze/providers';
 import { mkdir, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ClaudeAnalysisError, OpenAiAnalysisError } from '@git-analyze/providers';
 import { generationRequest, prepareAnalysisRequest } from './analysis-runtime.js';
 import { analysisCacheKey, loadAnalysisCache, storeAnalysisCache, type AnalysisSettings } from './analysis-cache.js';
 import { identity, loadAnalysisInput, readBoundedJson } from './analysis-input.js';
@@ -82,14 +81,16 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
       try {
         result = await executeAnalysis(loaded.packet, settings, transmission, apiKey!, dependencies.fetch);
       } catch (error) {
+        const providerFailure = analysisProviderFailure(error);
         const failure = { schemaVersion: 1, status: 'failed', createdAt: new Date().toISOString(), source: loaded.source,
-          settings, cacheKey: key, transmission: prepared.receipt, error: error instanceof OpenAiAnalysisError || error instanceof ClaudeAnalysisError
-            ? { code: error.code, stage: error.stage, usage: error.usage, httpStatus: error.httpStatus,
-              validationCode: error.validationCode, countedInputTokens: error.countedInputTokens }
-            : { code: 'analysis_failed', usage: null } };
-        const files = await saveAnalysisReports(directory, 'failure', failure, ['# 분석 실패', '',
-          ...analysisSourceLines(loaded.source), '', `- 오류: ${failure.error.code}`,
-          '- 정상 결과 캐시에 저장하지 않았다. 사용량이 null이어도 무과금을 의미하지 않는다.', ''].join('\n'));
+          settings, cacheKey: key, transmission: prepared.receipt,
+          error: providerFailure ?? { code: 'analysis_failed', usage: null } };
+        const lines = ['# 분석 실패', '', ...analysisSourceLines(loaded.source), '', `- 오류: ${failure.error.code}`];
+        if (providerFailure?.validationCode) lines.push(`- 검증 코드 \`${providerFailure.validationCode}\``);
+        if (providerFailure?.validationPath) lines.push(`- 오류 필드 \`${providerFailure.validationPath}\``);
+        if (providerFailure?.validationRule) lines.push(`- 검증 규칙 \`${providerFailure.validationRule}\``);
+        lines.push('- 정상 결과 캐시에 저장하지 않았다. 사용량이 null이어도 무과금을 의미하지 않는다.', '');
+        const files = await saveAnalysisReports(directory, 'failure', failure, lines.join('\n'));
         throw new Error(`Analysis failed: ${failure.error.code}. Failure report: ${files.jsonPath}`);
       }
       if (!values['no-cache']) {
