@@ -3,7 +3,24 @@ import { EXTRACTION_VERSION, type LocalEvidencePacket } from './evidence-extract
 import type { EvidencePacket, EvidenceSourceBinding } from './evidence.js';
 import type { RepositoryScope } from './repositories.js';
 
-export const EVIDENCE_MAPPING_VERSION = 'local-analysis-evidence-v1';
+export const LEGACY_EVIDENCE_MAPPING_VERSION = 'local-analysis-evidence-v1';
+export const EVIDENCE_MAPPING_VERSION = 'local-analysis-evidence-v2';
+export type EvidenceMappingVersion = typeof LEGACY_EVIDENCE_MAPPING_VERSION | typeof EVIDENCE_MAPPING_VERSION;
+
+/** Legacy references can identify more than one excerpt in the same commit. */
+export function ambiguousEvidenceReferences(packet: EvidencePacket) {
+  const groups = new Map<string, EvidencePacket['excerpts'][number][]>();
+  for (const excerpt of packet.excerpts) {
+    const key = canonicalJson(excerpt.reference);
+    const group = groups.get(key) ?? [];
+    group.push(excerpt);
+    groups.set(key, group);
+  }
+  return [...groups.values()].filter(group => group.length > 1).map(group => ({
+    reference: group[0]!.reference,
+    candidates: group.map(({ id, path }) => ({ excerptId: id, path })),
+  }));
+}
 
 function required(value: string): void {
   if (typeof value !== 'string' || !value.trim()) throw new Error('Evidence identities must not be empty');
@@ -20,8 +37,13 @@ export async function toEvidencePacket(input: RepositoryScope & {
   readonly contentVersion: string;
   readonly packet: LocalEvidencePacket;
   readonly sources: readonly EvidenceSourceBinding[];
+  readonly mappingVersion?: EvidenceMappingVersion;
 }): Promise<EvidencePacket> {
   const { ownerId, repositoryId, workItemId, contentVersion } = input;
+  const mappingVersion = input.mappingVersion ?? EVIDENCE_MAPPING_VERSION;
+  if (mappingVersion !== EVIDENCE_MAPPING_VERSION && mappingVersion !== LEGACY_EVIDENCE_MAPPING_VERSION) {
+    throw new Error('Unsupported evidence mapping version');
+  }
   for (const id of [ownerId, repositoryId, workItemId]) required(id);
   // Snapshot before hashing so caller mutations cannot race the asynchronous digest.
   const packet = structuredClone(input.packet);
@@ -79,13 +101,16 @@ export async function toEvidencePacket(input: RepositoryScope & {
   const mapped: Omit<EvidencePacket, 'version'> = {
     ownerId, repositoryId, workItemId,
     complete,
-    provenance: { kind: 'local_git', mappingVersion: EVIDENCE_MAPPING_VERSION, contentVersion, local,
+    provenance: { kind: 'local_git', mappingVersion, contentVersion, local,
       sources: packet.commits.map((commit) => bindings.get(commit.oid)!) },
-    excerpts: excerpts.map(({ id, text, complete: excerptComplete, commitOid, parentOid, path, locator }) => {
+    excerpts: await Promise.all(excerpts.map(async ({ id, text, complete: excerptComplete, commitOid, parentOid, path, locator }) => {
       const source = bindings.get(commitOid)!;
+      // The path digest keeps the identity stable and bounded even for long or non-ASCII paths.
+      const position = mappingVersion === EVIDENCE_MAPPING_VERSION && path !== null
+        ? `${locator}:file-sha256:${await sha256(path)}` : locator;
       return { id, text, complete: excerptComplete, commitOid, parentOid, path,
-        reference: { sourceRecordId: source.sourceRecordId, sourceVersion: source.sourceVersion, locator } };
-    }),
+        reference: { sourceRecordId: source.sourceRecordId, sourceVersion: source.sourceVersion, locator: position } };
+    })),
   };
   return { ...mapped, version: await sha256(mapped) };
 }

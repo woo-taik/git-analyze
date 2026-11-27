@@ -23,7 +23,7 @@ pnpm dev:api
 - `GET <공통 경로>/:workItemId`: 최신 `reviewVersion`, `reviewRevision`, 검토 상태 `review`, 분석 입력 `evidence`, 수집 정보 `source`. 발췌와 사용자 확인/철회 이력을 포함한다. 내용 hash·검토 상태·근거 연결을 다시 검증한다.
 - `GET <공통 경로>/:workItemId/resume?claim=구현ID&claim=결과ID&claim=기여ID`: 선택 순서대로 문장을 조합한다. claim은 1~8개이며 중복을 허용하지 않는다. `kind`는 `achievement`(기본) 또는 `activity`다. CLI와 같은 문장·문장 버전·절별 근거를 반환한다. 응답의 `externalRequests`는 0이다.
 
-`resume`에 `reviewVersion=<상세 조회에서 받은 버전>`을 추가하면 검토가 바뀌었을 때 409를 반환한다. 생략하면 요청 시 DB의 최신 검토를 사용한다. 기본 성과 출력에는 구현·결과·확인된 본인 기여와 완료 확인이 필요하다. 활동 출력에도 구현·확인된 본인 기여가 필요하다. 원문 규칙은 [검토와 문장 CLI](review-resume-cli.md)를 따른다.
+`resume`에 `reviewVersion=<상세 조회에서 받은 버전>`을 추가하면 검토가 바뀌었을 때 409를 반환한다. 생략하면 요청 시 DB의 최신 검토를 사용한다. 기본 성과 출력에는 구현·결과·확인된 본인 기여와 완료 확인이 필요하다. 활동 출력에도 구현·확인된 본인 기여가 필요하다. 기존 인용이 여러 발췌와 일치하면 상세 응답의 `ambiguousEvidence`에 파일 후보가 표시된다. 그 인용을 선택한 문장 출력은 422(`ambiguous_evidence_reference`)를 반환한다. 원문 규칙은 [검토와 문장 CLI](review-resume-cli.md)를 따른다.
 
 오류 상태는 잘못된 입력 400, 로컬 접근 조건 위반 403, 작업 없음 404, 검토 버전 변경 409, 미확인/철회된 주장 또는 문장 정책 위반 422, DB 사용 불가·저장된 내용 검증 실패 503이다. SQL·접속 정보·검증 실패 내용은 오류 응답에 포함하지 않는다. DB 연결과 SQL 실행은 각각 5초로 제한한다.
 

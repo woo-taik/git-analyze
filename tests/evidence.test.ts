@@ -170,7 +170,7 @@ describe('bounded local evidence', () => {
       .toContain('binary');
     const reconstructed = { ...mapped.provenance.local, complete: mapped.complete,
       excerpts: mapped.excerpts.map((excerpt) => ({ id: excerpt.id, commitOid: excerpt.commitOid,
-        parentOid: excerpt.parentOid, path: excerpt.path, locator: excerpt.reference.locator,
+        parentOid: excerpt.parentOid, path: excerpt.path, locator: excerpt.reference.locator?.replace(/:file-sha256:[a-f0-9]{64}$/, ''),
         text: excerpt.text, complete: excerpt.complete })) };
     expect(reconstructed).toEqual(report.packet);
     expect(mapped.excerpts.every((excerpt) => excerpt.reference.sourceRecordId === `fixture-record:${excerpt.commitOid}`)).toBe(true);

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { buildLocalEvidence, toEvidencePacket, type EvidencePacket } from '../packages/core/src/index.js';
+import { buildLocalEvidence, LEGACY_EVIDENCE_MAPPING_VERSION, toEvidencePacket, type EvidencePacket } from '../packages/core/src/index.js';
 import { CLAUDE_ANALYSIS_PROMPT_VERSION, CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION, ClaudeAnalysisProvider,
   prepareClaudeAnalysisRequest } from '../packages/providers/src/index.js';
 import { executeAnalyze } from '../apps/cli/src/analyze.js';
@@ -14,6 +14,7 @@ import { analysisCacheKey, hash } from '../apps/cli/src/analysis-cache.js';
 const oid = 'a'.repeat(40);
 const config = { apiKey: 'CLAUDE_KEY_SENTINEL', model: 'claude-fixture', contextWindowTokens: 16000 };
 let packet: EvidencePacket;
+let legacyPacket: EvidencePacket;
 let input: string;
 let bindings: string;
 let root: string;
@@ -56,6 +57,8 @@ beforeAll(async () => {
   const sourceBindings = { schemaVersion: 1, ownerId: 'owner', repositoryId: 'repo', workItemId: 'work',
     sources: [{ ownerId: 'owner', repositoryId: 'repo', commitOid: oid, sourceRecordId: 'record', sourceVersion: oid }] };
   packet = await toEvidencePacket({ ...sourceBindings, packet: local, contentVersion: hash(local) });
+  legacyPacket = await toEvidencePacket({ ...sourceBindings, packet: local, contentVersion: hash(local),
+    mappingVersion: LEGACY_EVIDENCE_MAPPING_VERSION });
   input = join(root, 'evidence.json'); bindings = join(root, 'bindings.json');
   await writeFile(bindings, JSON.stringify(sourceBindings));
   await writeFile(input, JSON.stringify({ schemaVersion: 1, createdAt: '2026-10-26T00:00:00Z', contentVersion: hash(local), packet: local,
@@ -69,12 +72,13 @@ afterAll(async () => {
 });
 
 describe('Claude analysis adapter and CLI default', () => {
-  it('preserves the released v5 request body and cache key while selecting v6 for new requests', () => {
+  it('preserves the released v5 request body and key and requires evidence in the new wire schema', () => {
     const settings = { provider: 'claude' as const, model: config.model, modelEpoch: 'fixture-v1', contextWindowTokens: 16000,
       maxInputTokens: 12000, maxOutputTokens: 6000, timeoutMs: 60000 };
     const transmission = options().transmission;
-    const v5 = prepareClaudeAnalysisRequest(packet, settings.model, transmission, 'claude-analysis-prompt-v5');
-    const v6 = prepareClaudeAnalysisRequest(packet, settings.model, transmission);
+    const v5 = prepareClaudeAnalysisRequest(legacyPacket, settings.model, transmission, 'claude-analysis-prompt-v5');
+    const v6 = prepareClaudeAnalysisRequest(legacyPacket, settings.model, transmission, 'claude-analysis-prompt-v6');
+    const v7 = prepareClaudeAnalysisRequest(packet, settings.model, transmission);
     // Fingerprints recorded from the released v5 request for this fixture.
     expect(hash(v5.body)).toBe('53882f8981e30d9484b3a5da488cb6da28287e5018f72001b4220113d9f5df6b');
     expect(analysisCacheKey(v5, settings)).toBe('c22ef686d00f4bf9e8fe49762d5373573531a1d972ff4d8e3cdcce19cf94ddf5');
@@ -83,6 +87,29 @@ describe('Claude analysis adapter and CLI default', () => {
     expect(v6.body.messages).toEqual(v5.body.messages);
     expect(v6.body.output_config).toEqual(v5.body.output_config);
     expect(analysisCacheKey(v6, settings)).not.toBe(analysisCacheKey(v5, settings));
+    expect(v7.promptVersion).toBe(CLAUDE_ANALYSIS_PROMPT_VERSION);
+    expect(v7.wireSchemaVersion).toBe(CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION);
+    expect(v7.body.system).toBe(v6.body.system);
+    const branch = (v7.body.output_config.format.schema.$defs as {
+      claim: { anyOf: { properties: { status: { enum: string[] }; evidence: { minItems?: number } } }[] };
+    }).claim.anyOf;
+    expect(branch.find(item => item.properties.status.enum[0] === 'source_supported')?.properties.evidence.minItems).toBe(1);
+    expect(branch.find(item => item.properties.status.enum[0] === 'inferred')?.properties.evidence.minItems).toBeUndefined();
+  });
+
+  it('normalizes repeated numbers after validating them while retaining required evidence and raw limits', async () => {
+    const citations = (numbers: number[]) => harness(response => {
+      const value = JSON.parse(response.content[0].text);
+      value.implementation[0].evidence = numbers;
+      response.content[0].text = JSON.stringify(value);
+      return response;
+    }).provider.analyze(packet, options());
+    expect((await citations([1, 1])).value.implementation[0]?.evidence).toEqual([packet.excerpts[0]!.reference]);
+    await expect(citations([1, 0, 1])).rejects.toMatchObject({
+      validationCode: 'unknown_evidence', validationPath: '/implementation/0/evidence/1',
+    });
+    await expect(citations([])).rejects.toMatchObject({ validationRule: 'minItems' });
+    await expect(citations(Array(21).fill(1))).rejects.toMatchObject({ validationRule: 'maxItems' });
   });
 
   it('asks v6 to ground the headline quantity or fall back to observable behavior', () => {
@@ -220,7 +247,7 @@ describe('Claude analysis adapter and CLI default', () => {
     const legacyFile = join(root, 'legacy-analysis.json');
     expect(data.countRequest.system).toContain('one or two short Korean sentences in total');
     for (const [legacyVersion, citationNumber] of [['claude-analysis-prompt-v1', undefined], ['claude-analysis-prompt-v2', 1],
-      ['claude-analysis-prompt-v3', 1], ['claude-analysis-prompt-v4', 1], ['claude-analysis-prompt-v5', 1]] as const) {
+      ['claude-analysis-prompt-v3', 1], ['claude-analysis-prompt-v4', 1], ['claude-analysis-prompt-v5', 1], ['claude-analysis-prompt-v6', 1]] as const) {
       const legacy = prepareClaudeAnalysisRequest(packet, config.model, options().transmission, legacyVersion);
       expect(JSON.parse(legacy.body.messages[0]!.content).excerpts[0].citationNumber).toBe(citationNumber);
       const legacyKey = analysisCacheKey(legacy, saved.settings);

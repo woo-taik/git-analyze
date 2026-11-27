@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { applyReviewChanges, createReviewState, parseReviewChanges, rebaseReviewState } from '@git-analyze/core';
+import { ambiguousEvidenceReferences, applyReviewChanges, createReviewState, parseReviewChanges, rebaseReviewState } from '@git-analyze/core';
 import { readBoundedJson } from './analysis-input.js';
 import { renderAnalysisMarkdown, reserveAnalysisDirectory, saveAnalysisReports } from './analysis-report.js';
 import { loadSavedAnalysis } from './saved-analysis.js';
@@ -34,11 +34,18 @@ export async function executeReview(args: readonly string[]) {
     const outputDirectory = await reserveAnalysisDirectory(values.output, 'review-reports');
     const current = previous && !changedBaseline && !changes ? { version: previous.version, stored: previous.stored }
       : await persistReview(directory, previous, saved.analysisFile, saved.analysisVersion, state);
+    const ambiguousEvidence = ambiguousEvidenceReferences(saved.baseline.packet);
     const report = { schemaVersion: 1, status: 'reviewed', createdAt: metadata.recordedAt, scope, storeDirectory,
       version: current.version, revision: current.stored.revision, analysisFile: saved.analysisFile,
-      analysisVersion: saved.analysisVersion, source: saved.source, state };
+      analysisVersion: saved.analysisVersion, source: saved.source, state, ambiguousEvidence };
     const markdown = [renderAnalysisMarkdown(state.analysis, saved.source, false, saved.baseline.packet.complete, true,
       saved.result.request.promptVersion),
+      ...(ambiguousEvidence.length ? [
+        '## 원본 파일을 특정할 수 없는 인용', '',
+        ...ambiguousEvidence.map(({ reference, candidates }) =>
+          `- ${text(reference.sourceRecordId)} / ${text(reference.locator ?? '(위치 없음)')} — ${candidates.map(item => text(item.path ?? item.excerptId)).join(', ')}`),
+        '', '해당 인용을 사용하려면 근거를 새로 분석하고 검토에 적용한다.', '',
+      ] : []),
       '## 검토 이력', '', `- 검토 버전: ${current.version}; revision ${current.stored.revision}`,
       `- 완료 상태: ${state.completion?.status ?? 'unknown'}; 완료일: ${state.completion?.completedAt ?? '(미확인)'}`,
       '', ...state.events.map((event) => `- ${event.recordedAt} / ${text(event.actor)} / ${event.action.kind} / ${event.id}`),

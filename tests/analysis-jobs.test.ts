@@ -3,8 +3,8 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
-import { buildLocalEvidence, type ReviewAction } from '../packages/core/src/index.js';
-import { analysisCacheKey, hash, prepareAnalysisRequest, prepareAnalysisSubmission, restoreJobAnalysis } from '../packages/providers/src/index.js';
+import { buildLocalEvidence, LEGACY_EVIDENCE_MAPPING_VERSION, type ReviewAction } from '../packages/core/src/index.js';
+import { analysisCacheKey, hash, parseAnalysisInput, prepareAnalysisRequest, prepareAnalysisSubmission, restoreJobAnalysis } from '../packages/providers/src/index.js';
 import { AnalysisJobStore, createDatabase } from '../packages/database/src/index.js';
 import { analysisHandler } from '../apps/worker/src/analysis-handler.js';
 import { loadSavedAnalysis } from '../apps/cli/src/saved-analysis.js';
@@ -149,17 +149,18 @@ describe('asynchronous analysis', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
   it.each([
-    'claude-analysis-prompt-v2', 'claude-analysis-prompt-v3', 'claude-analysis-prompt-v4', 'claude-analysis-prompt-v5',
+    'claude-analysis-prompt-v2', 'claude-analysis-prompt-v3', 'claude-analysis-prompt-v4', 'claude-analysis-prompt-v5', 'claude-analysis-prompt-v6',
   ])('executes the prompt approved at submission (%s)', async promptVersion => {
     const body = await fixture();
     const request = await prepareAnalysisSubmission({ ...body, settings: { ...body.settings, provider: 'claude' } });
-    const { promptVersion: _storedVersion, ...legacySnapshot } = request.snapshot;
-    const prepared = prepareAnalysisRequest(request.loaded.packet, request.settings, request.transmission, promptVersion);
+    const { promptVersion: _storedVersion, evidenceMappingVersion: _mappingVersion, ...legacySnapshot } = request.snapshot;
+    const loaded = await parseAnalysisInput(body.evidence, body.bindings, 'api-submission', LEGACY_EVIDENCE_MAPPING_VERSION);
+    const prepared = prepareAnalysisRequest(loaded.packet, request.settings, request.transmission, promptVersion);
     // This key was stored by v5 before new submissions started using v6.
     const key = promptVersion === 'claude-analysis-prompt-v5'
       ? '70b0d401ddec6c2feaf528bd64da718162a4169e749773ba42eb860115c195eb'
       : analysisCacheKey(prepared, request.settings);
-    const snapshot = promptVersion === 'claude-analysis-prompt-v2' ? legacySnapshot : { ...request.snapshot, promptVersion };
+    const snapshot = promptVersion === 'claude-analysis-prompt-v2' ? legacySnapshot : { ...legacySnapshot, promptVersion };
     const approved = await prepareAnalysisSubmission(snapshot, key);
     const { row, store, payload } = memoryStore(snapshot, key);
     const fetch = claudeResponse(prepared.validationPacket);

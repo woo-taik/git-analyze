@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { ANALYSIS_CLAIM_FIELDS, ANALYSIS_SCHEMA_VERSION, MAX_ANALYSIS_JSON_BYTES, AnalysisValidationError, canonicalJson, parseWorkItemAnalysis,
+import { ANALYSIS_CLAIM_FIELDS, ANALYSIS_SCHEMA_VERSION, MAX_ANALYSIS_JSON_BYTES, MAX_CLAIM_EVIDENCE_REFERENCES,
+  AnalysisValidationError, canonicalJson, parseWorkItemAnalysis,
   type EvidencePacket, type LlmAnalysisProvider, type LlmAnalysisRequestOptions, type LlmUsage } from '@git-analyze/core';
-import { ANALYSIS_INSTRUCTIONS, ANALYSIS_GENERATION_SCHEMA, EXACT_CITATION_INSTRUCTION, NUMBERED_CITATION_SCHEMA,
+import { ANALYSIS_INSTRUCTIONS, ANALYSIS_GENERATION_SCHEMA, EXACT_CITATION_INSTRUCTION, NUMBERED_CITATION_SCHEMA, REQUIRED_NUMBERED_CITATION_SCHEMA,
   WORK_ITEM_IMPACT_INSTRUCTIONS } from './analysis-prompt.js';
 import type { OpenAiAnalysisErrorCode, OpenAiAnalysisResult } from './openai-analysis.js';
 import { prepareAnalysisTransmission } from './transmission.js';
@@ -9,8 +10,9 @@ import { prepareAnalysisTransmission } from './transmission.js';
 const LEGACY_PROMPT_VERSION = 'claude-analysis-prompt-v1';
 export const PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v2';
 export const CLAUDE_IMPACT_PROMPT_VERSION = 'claude-analysis-prompt-v3';
-export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v6';
-export const CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION = 'claude-analysis-wire-v2';
+const CLAUDE_V6_PROMPT_VERSION = 'claude-analysis-prompt-v6';
+export const CLAUDE_ANALYSIS_PROMPT_VERSION = 'claude-analysis-prompt-v7';
+export const CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION = 'claude-analysis-wire-v3';
 const CLAUDE_V2_INSTRUCTIONS = [
   ANALYSIS_INSTRUCTIONS.replace(EXACT_CITATION_INSTRUCTION,
     'In each claim, evidence is a list of distinct integer citationNumber values copied from the supplied excerpts. A source_supported claim must cite at least one excerpt. Never cite an excerpt that does not directly support the claim.'),
@@ -41,7 +43,7 @@ const instructionsByVersion = new Map([
     'For metric-1 write the chosen change and the most meaningful supported effect in one sentence. Keep the unit, qualifier and measurement basis of any measured delta; do not invent before or after totals. If no metric is supported, leave metric-1 missing and use effect-1 for the verified behavior.',
     'For decision-1 write one complementary sentence connecting the problem or cause to the choice. Include the most relevant alternative and trade-off only when evidenced. Avoid repeating the headline. Keep inferred comparisons in alternatives.',
   ].join('\n')],
-  [CLAUDE_ANALYSIS_PROMPT_VERSION, [CLAUDE_IMPACT_BASE_INSTRUCTIONS,
+  [CLAUDE_V6_PROMPT_VERSION, [CLAUDE_IMPACT_BASE_INSTRUCTIONS,
     'The CLI prints one or two short Korean sentences in total. Center the headline and optional complementary sentence on one decision, without labels or line breaks. Put secondary details in the JSON sections.',
     'Use problem-1 for the observed symptom and cause-1 for the mechanism. Mark unverified causes inferred. For decision-1 name the chosen change and connect it to the problem or cause when documented. Avoid restating the headline.',
     'In alternatives, use alternative-1, alternative-2, ... for options and tradeoff-1, tradeoff-2, ... for their gains and costs. Compare only options for the same decision. Mark deduced options and trade-offs inferred, never historical deliberation.',
@@ -69,21 +71,26 @@ export class ClaudeAnalysisError extends Error {
 export function prepareClaudeAnalysisRequest(packet: EvidencePacket, model: string, transmission: LlmAnalysisRequestOptions['transmission'],
   promptVersion: string = CLAUDE_ANALYSIS_PROMPT_VERSION) {
   if (typeof model !== 'string' || !model.trim()) throw new ClaudeAnalysisError('invalid_options', 'count');
-  const system = instructionsByVersion.get(promptVersion);
+  const strictCitations = promptVersion === CLAUDE_ANALYSIS_PROMPT_VERSION;
+  const system = instructionsByVersion.get(strictCitations ? CLAUDE_V6_PROMPT_VERSION : promptVersion);
   if (!system) throw new Error('Unsupported saved Claude prompt version');
   const prepared = prepareAnalysisTransmission(structuredClone(packet), structuredClone(transmission));
   const legacy = promptVersion === LEGACY_PROMPT_VERSION;
   const content = legacy ? prepared.input : canonicalJson({ ...prepared.payload,
     excerpts: prepared.payload.excerpts.map((excerpt, index) => ({ ...excerpt, citationNumber: index + 1 })) });
-  return { ...prepared, promptVersion, wireSchemaVersion: legacy ? 'claude-analysis-wire-v1' : CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION,
+  const wireSchemaVersion = strictCitations ? CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION
+    : legacy ? 'claude-analysis-wire-v1' : 'claude-analysis-wire-v2';
+  const schema = strictCitations ? REQUIRED_NUMBERED_CITATION_SCHEMA
+    : legacy ? ANALYSIS_GENERATION_SCHEMA : NUMBERED_CITATION_SCHEMA;
+  return { ...prepared, promptVersion, wireSchemaVersion,
     body: { model, system,
       messages: [{ role: 'user' as const, content }],
       output_config: { format: { type: 'json_schema' as const,
-        schema: structuredClone(legacy ? ANALYSIS_GENERATION_SCHEMA : NUMBERED_CITATION_SCHEMA) } } } };
+        schema: structuredClone(schema) } } } };
 }
 const integer = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const object = (value: unknown): Record<string, unknown> | null => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-function expandCitations(raw: string, packet: EvidencePacket): string {
+function expandCitations(raw: string, packet: EvidencePacket, strictCitations: boolean): string {
   if (Buffer.byteLength(raw, 'utf8') > MAX_ANALYSIS_JSON_BYTES) throw new AnalysisValidationError('output_limit', '/');
   let value;
   try { value = object(JSON.parse(raw)); }
@@ -94,11 +101,24 @@ function expandCitations(raw: string, packet: EvidencePacket): string {
     for (const [index, rawClaim] of claims.entries()) {
       const claim = object(rawClaim);
       if (!claim || !Array.isArray(claim.evidence)) continue;
-      claim.evidence = claim.evidence.map((number, position) => {
+      const path = `/${section}/${index}/evidence`;
+      const numbers = claim.evidence;
+      if (strictCitations && numbers.length > MAX_CLAIM_EVIDENCE_REFERENCES) {
+        throw new AnalysisValidationError('invalid_schema', path, 'maxItems');
+      }
+      const references = numbers.map((number, position) => {
         const excerpt = integer(number) && number > 0 ? packet.excerpts[number - 1] : undefined;
-        if (!excerpt) throw new AnalysisValidationError('unknown_evidence', `/${section}/${index}/evidence/${position}`);
+        if (!excerpt) throw new AnalysisValidationError('unknown_evidence', `${path}/${position}`);
         return excerpt.reference;
       });
+      // Only collapse repetitions of the same number. Distinct excerpts remain distinct.
+      const seen = new Set<number>();
+      claim.evidence = strictCitations ? references.filter((_, position) => {
+        const number = numbers[position] as number;
+        if (seen.has(number)) return false;
+        seen.add(number);
+        return true;
+      }) : references;
     }
   }
   return JSON.stringify(value);
@@ -175,7 +195,8 @@ export class ClaudeAnalysisProvider implements LlmAnalysisProvider {
     let value;
     try {
       const rawText = object(text[0])!.text as string;
-      const analysisJson = prepared.promptVersion === LEGACY_PROMPT_VERSION ? rawText : expandCitations(rawText, prepared.validationPacket);
+      const analysisJson = prepared.promptVersion === LEGACY_PROMPT_VERSION ? rawText
+        : expandCitations(rawText, prepared.validationPacket, prepared.wireSchemaVersion === CLAUDE_ANALYSIS_WIRE_SCHEMA_VERSION);
       value = parseWorkItemAnalysis(analysisJson, { packet: prepared.validationPacket });
     }
     catch (error) {

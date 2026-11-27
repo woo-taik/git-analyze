@@ -1,4 +1,4 @@
-import { object, parseAnalysisInput } from './analysis-input.js';
+import { object, parseAnalysisInput, savedEvidenceMappingVersion } from './analysis-input.js';
 import { parseAnalysisSettings } from './analysis-execution.js';
 import { canonicalJson } from '@git-analyze/core';
 import { analysisCacheKey, hash, validateAnalysisResult } from './analysis-contract.js';
@@ -8,7 +8,8 @@ import { PREVIOUS_CLAUDE_ANALYSIS_PROMPT_VERSION } from './claude-analysis.js';
 /** Accept data, never server-side paths or client credentials. */
 export async function prepareAnalysisSubmission(value: unknown, savedRequestKey?: string) {
   const body = object(value);
-  const loaded = await parseAnalysisInput(body.evidence, body.bindings, 'api-submission');
+  const mappingVersion = savedRequestKey === undefined ? undefined : savedEvidenceMappingVersion(body.evidenceMappingVersion);
+  const loaded = await parseAnalysisInput(body.evidence, body.bindings, 'api-submission', mappingVersion);
   const settings = parseAnalysisSettings(body.settings);
   const policy = object(body.transmission);
   if (!Array.isArray(policy.allowedExcerptIds) || policy.allowedExcerptIds.length < 1
@@ -28,9 +29,9 @@ export async function prepareAnalysisSubmission(value: unknown, savedRequestKey?
   const key = analysisCacheKey(prepared, settings);
   if (savedRequestKey !== undefined && key !== savedRequestKey) throw new Error('Stored request key does not match');
   return { loaded, settings, transmission, prepared, key,
-    snapshot: { evidence: body.evidence, bindings: loaded.bindings, settings, transmission,
+    snapshot: { evidence: body.evidence, evidenceMappingVersion: loaded.evidenceMappingVersion, bindings: loaded.bindings, settings, transmission,
       promptVersion: providerMetadata(prepared).promptVersion },
-    preview: { cacheKey: key, transmission: prepared.receipt, countRequest: prepared.body,
+    preview: { cacheKey: key, evidenceMappingVersion: loaded.evidenceMappingVersion, transmission: prepared.receipt, countRequest: prepared.body,
       analysisRequest: generationRequest(prepared, settings), externalRequests: 0 } };
 }
 
@@ -39,6 +40,7 @@ export async function restoreJobAnalysis(request: unknown, key: string, reportVa
   const { prepared, loaded, settings, snapshot } = await prepareAnalysisSubmission(request, key);
   const report = object(reportValue);
   if (report.schemaVersion !== 1 || report.status !== 'analyzed' || object(report.cache).key !== key
+    || savedEvidenceMappingVersion(report.evidenceMappingVersion) !== loaded.evidenceMappingVersion
     || canonicalJson(report.source) !== canonicalJson(loaded.source)
     || canonicalJson(report.bindings) !== canonicalJson(loaded.bindings)
     || canonicalJson(report.evidence) !== canonicalJson(snapshot.evidence)

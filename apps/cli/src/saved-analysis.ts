@@ -3,7 +3,7 @@ import { canonicalJson } from '@git-analyze/core';
 import type { AnalysisTransmissionReceipt } from '@git-analyze/providers';
 import { prepareAnalysisRequest } from './analysis-runtime.js';
 import { analysisCacheKey, hash, validateAnalysisResult, type AnalysisSettings } from './analysis-cache.js';
-import { identity, object, parseAnalysisInput, readBoundedJson } from './analysis-input.js';
+import { identity, object, parseAnalysisInput, readBoundedJson, savedEvidenceMappingVersion } from './analysis-input.js';
 
 // Check an already sanitized snapshot without needing to retain the secret values used to mask it.
 function maskedFrom(original: string, masked: string): boolean {
@@ -26,7 +26,8 @@ export async function loadSavedAnalysis(path: string) {
   const source = object(report.source);
   if (typeof source.inputFile !== 'string') throw new Error('Missing original evidence file');
   const evidence = report.evidence ?? await readBoundedJson(source.inputFile, 32 * 1024 * 1024);
-  const loaded = await parseAnalysisInput(evidence, report.bindings, source.inputFile);
+  const loaded = await parseAnalysisInput(evidence, report.bindings, source.inputFile,
+    savedEvidenceMappingVersion(report.evidenceMappingVersion));
   if (canonicalJson(source) !== canonicalJson(loaded.source)) throw new Error('Saved analysis source does not match original evidence');
   const rawSettings = object(report.settings);
   if (rawSettings.provider !== undefined && !['claude', 'openai'].includes(String(rawSettings.provider))) throw new Error('Invalid saved provider');

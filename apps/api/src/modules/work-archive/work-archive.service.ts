@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { canonicalJson, composeResumeWithTrace, RESUME_POLICY_VERSION, ResumeOutputError } from '@git-analyze/core';
+import { ambiguousEvidenceReferences, canonicalJson, composeResumeWithTrace, RESUME_POLICY_VERSION, ResumeOutputError } from '@git-analyze/core';
 import { analysisJobs, ArchiveNotFoundError, createDatabase, listArchivedWorks, withArchivedReview, workAnalysisVersions, workReviewVersions, type ArchiveScope } from '@git-analyze/database';
 import { ConflictException, HttpException, Inject, Injectable, NotFoundException,
   ServiceUnavailableException, UnprocessableEntityException, type OnModuleDestroy } from '@nestjs/common';
@@ -14,7 +14,8 @@ export const ARCHIVE_CONFIG = Symbol('ARCHIVE_CONFIG');
 function reviewDetail(scope: ArchiveScope, current: ArchivedReviewSnapshot) {
   return { scope, reviewVersion: current.version, reviewRevision: current.stored.revision,
     analysisVersion: current.context.analysisVersion, review: current.stored.state,
-    evidence: current.context.packet, source: current.saved.source };
+    evidence: current.context.packet, source: current.saved.source,
+    ambiguousEvidence: ambiguousEvidenceReferences(current.context.packet) };
 }
 
 @Injectable()

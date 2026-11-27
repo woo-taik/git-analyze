@@ -51,7 +51,7 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
   const cacheDirectory = resolve(values['cache-dir'] ?? join('.cache', 'analysis'));
   if (values['dry-run']) {
     const preview = { schemaVersion: 1, status: 'preview', createdAt: new Date().toISOString(), source: loaded.source,
-      bindings: loaded.bindings, settings, cacheKey: key, transmission: prepared.receipt,
+      evidenceMappingVersion: loaded.evidenceMappingVersion, bindings: loaded.bindings, settings, cacheKey: key, transmission: prepared.receipt,
       countRequest: prepared.body, analysisRequest: generationRequest(prepared, settings) };
     const directory = await reserveAnalysisDirectory(values.output);
     const files = await saveAnalysisReports(directory, 'preview', preview, renderPreviewMarkdown(loaded.source, prepared));
@@ -99,6 +99,7 @@ export async function executeAnalyze(args: readonly string[], dependencies: {
       }
     }
     const report = { schemaVersion: 1, status: 'analyzed', createdAt: new Date().toISOString(), source: loaded.source,
+      evidenceMappingVersion: loaded.evidenceMappingVersion,
       bindings: loaded.bindings, settings, cache: { hit: cacheHit, stored: cacheStored, key, enabled: !values['no-cache'] },
       transmission: prepared.receipt, sentInput: JSON.parse(prepared.input) as unknown, result };
     const markdown = renderAnalysisMarkdown(result.value, loaded.source, cacheHit, prepared.receipt.complete, false, result.request.promptVersion);

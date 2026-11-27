@@ -1,1 +1,1 @@
-export { readBoundedJson, object, identity, loadAnalysisInput, parseAnalysisInput } from '@git-analyze/providers';
+export { readBoundedJson, object, identity, loadAnalysisInput, parseAnalysisInput, savedEvidenceMappingVersion } from '@git-analyze/providers';

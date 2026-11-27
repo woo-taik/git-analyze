@@ -1,6 +1,7 @@
 import { open } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { toEvidencePacket, validateLocalEvidencePacket, type EvidenceSourceBinding } from '@git-analyze/core';
+import { EVIDENCE_MAPPING_VERSION, LEGACY_EVIDENCE_MAPPING_VERSION, toEvidencePacket, validateLocalEvidencePacket,
+  type EvidenceMappingVersion, type EvidenceSourceBinding } from '@git-analyze/core';
 
 export async function readBoundedJson(path: string, maxBytes: number): Promise<unknown> {
   try {
@@ -46,7 +47,14 @@ export async function loadAnalysisInput(inputPath: string, bindingsPath: string)
     await readBoundedJson(resolve(bindingsPath), 1_048_576), inputFile);
 }
 
-export async function parseAnalysisInput(value: unknown, sourceBindings: unknown, inputFile: string) {
+export function savedEvidenceMappingVersion(value: unknown): EvidenceMappingVersion {
+  if (value === undefined) return LEGACY_EVIDENCE_MAPPING_VERSION;
+  if (value === EVIDENCE_MAPPING_VERSION || value === LEGACY_EVIDENCE_MAPPING_VERSION) return value;
+  throw new Error('Unsupported saved evidence mapping version');
+}
+
+export async function parseAnalysisInput(value: unknown, sourceBindings: unknown, inputFile: string,
+  mappingVersion: EvidenceMappingVersion = EVIDENCE_MAPPING_VERSION) {
   const report = object(value);
   if (report.schemaVersion !== 1 || typeof report.contentVersion !== 'string' || !/^[a-f0-9]{64}$/.test(report.contentVersion)) {
     throw new Error('Unsupported evidence report schema or content version');
@@ -79,8 +87,8 @@ export async function parseAnalysisInput(value: unknown, sourceBindings: unknown
     return { ownerId: identity(source.ownerId), repositoryId: identity(source.repositoryId), commitOid,
       sourceRecordId: identity(source.sourceRecordId), sourceVersion: identity(source.sourceVersion) };
   });
-  const mapped = await toEvidencePacket({ ...scope, packet, contentVersion: report.contentVersion, sources });
-  return { packet: mapped, bindings: { schemaVersion: 1, ...scope, sources }, source: {
+  const mapped = await toEvidencePacket({ ...scope, packet, contentVersion: report.contentVersion, sources, mappingVersion });
+  return { packet: mapped, evidenceMappingVersion: mappingVersion, bindings: { schemaVersion: 1, ...scope, sources }, source: {
     inputFile, contentVersion: report.contentVersion, repositoryPath: source.repositoryPath,
     ref: source.ref ?? null, tipOid: source.tipOid, startAt, endAt,
     commitCount: packet.commits.length, pathFilter: packet.pathFilter,

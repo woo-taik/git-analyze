@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
-  buildLocalEvidence, canonicalJson, EVIDENCE_MAPPING_VERSION, EXTRACTION_VERSION, toEvidencePacket,
+  ambiguousEvidenceReferences, applyReviewChanges, buildLocalEvidence, canonicalJson, composeResumeWithTrace,
+  createReviewState, EVIDENCE_MAPPING_VERSION, EXTRACTION_VERSION, LEGACY_EVIDENCE_MAPPING_VERSION, toEvidencePacket,
+  type EvidencePacket, type WorkItemAnalysis,
   type EvidenceSourceBinding, type LocalEvidencePacket,
 } from '../packages/core/src/index.js';
 
@@ -51,12 +53,45 @@ describe('local evidence to analysis input', () => {
     for (const [index, excerpt] of excerpts.entries()) {
       expect(result.excerpts[index]).toEqual({ id: excerpt.id, text: excerpt.text, complete: excerpt.complete,
         commitOid: excerpt.commitOid, parentOid: excerpt.parentOid, path: excerpt.path,
-        reference: { sourceRecordId: 'source-1', sourceVersion: 'snapshot-1', locator: excerpt.locator } });
+        reference: { sourceRecordId: 'source-1', sourceVersion: 'snapshot-1', locator: excerpt.path === null
+          ? excerpt.locator : `${excerpt.locator}:file-sha256:${createHash('sha256').update(canonicalJson(excerpt.path)).digest('hex')}` } });
     }
     expect(result.provenance.local.commits[0]).toMatchObject({ contribution: 'committer_only', decision: 'review',
       reasons: ['committer_only', 'manual_include'], files: [{ reason: null }, { reason: 'low_priority', excerptId: null }] });
     expect(packet).toEqual(before);
     expect(result.provenance.local.commits).not.toBe(packet.commits);
+  });
+
+  it('traces equal-length patches to their own files and rejects ambiguous legacy references at export', async () => {
+    const local = await fixture({ includeLowPriority: true });
+    const mapped = await convert(local);
+    const legacy = await toEvidencePacket({ ...scope, workItemId: 'work-1', contentVersion: digest(local),
+      packet: local, sources, mappingVersion: LEGACY_EVIDENCE_MAPPING_VERSION });
+    const patches = mapped.excerpts.filter(excerpt => excerpt.path !== null);
+    expect(patches).toHaveLength(2);
+    expect(legacy.excerpts.filter(excerpt => excerpt.path !== null).map(excerpt => excerpt.reference.locator))
+      .toEqual(['first-parent-patch-lines:1-3', 'first-parent-patch-lines:1-3']);
+    expect(patches[0]!.reference).not.toEqual(patches[1]!.reference);
+    expect(ambiguousEvidenceReferences(mapped)).toEqual([]);
+    expect(ambiguousEvidenceReferences(legacy)[0]?.candidates.map(item => item.path)).toEqual(patches.map(item => item.path));
+
+    function exportTrace(packet: EvidencePacket) {
+      const [first, second] = packet.excerpts.filter(excerpt => excerpt.path !== null);
+      const analysis: WorkItemAnalysis = { workItemId: packet.workItemId, inputVersion: packet.version,
+        problem: [], constraints: [], alternatives: [], decision: [], results: [], verification: [], missingQuestions: [],
+        implementation: [
+          { id: 'first', text: '첫 번째 파일 변경', status: 'source_supported', evidence: [first!.reference] },
+          { id: 'second', text: '두 번째 파일 변경', status: 'source_supported', evidence: [second!.reference] },
+        ],
+        contribution: [{ id: 'personal', text: '변경을 검토함', status: 'inferred', evidence: [] }] };
+      const context = { packet, analysis, analysisVersion: packet.version };
+      const review = applyReviewChanges(createReviewState(context),
+        [{ kind: 'confirm', claimId: 'personal', text: '변경을 검토함' }],
+        context, { actor: 'fixture', recordedAt: '2026-11-27T00:00:00.000Z' });
+      return composeResumeWithTrace(review, context, ['first', 'second', 'personal'], 'activity').trace;
+    }
+    expect(exportTrace(mapped).flatMap(clause => clause.evidence.map(item => item.path))).toEqual(patches.map(item => item.path));
+    expect(() => exportTrace(legacy)).toThrow('ambiguous_evidence_reference');
   });
 
   it('retains truncation and unavailable commits without claiming semantic sufficiency', async () => {

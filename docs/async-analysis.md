@@ -34,7 +34,7 @@ CLI를 사용할 때는 성공 응답의 result를 analysis.json으로 저장하
 pg-boss 전달 재시도는 2회, 5초 간격이며 DB claim은 한 실행만 허용한다.
 프로세스 종료나 결과 저장 실패 후 5분 lease가 만료되면 needs_input/execution_outcome_unknown으로 전환한다.
 외부 요청 이후 오류도 needs_input으로 남기고 자동 재호출하지 않는다. usage가 null이어도 무과금을 뜻하지 않는다.
-스키마 거부의 작업 조회 응답은 `error.validationCode`, `error.validationPath`, `error.validationRule`에 정해진 진단 값만 제공한다. 예를 들어 중복 질문은 `invalid_schema`, `/missingQuestions`, `uniqueItems`로 표시한다. 새 Claude 요청은 v6를 쓰며 이전에 승인해 저장한 작업은 당시 프롬프트와 요청 키를 사용한다.
+스키마 거부의 작업 조회 응답은 `error.validationCode`, `error.validationPath`, `error.validationRule`에 정해진 진단 값만 제공한다. 예를 들어 중복 질문은 `invalid_schema`, `/missingQuestions`, `uniqueItems`로 표시한다. 새 Claude 요청은 v7과 파일별 근거 매핑을 사용한다. 이전에 승인해 저장한 작업은 당시 매핑·프롬프트·요청 키를 사용한다. 저장되기 전의 이전 미리보기는 다시 준비해 승인한다.
 공급자 키 누락은 전송 전이므로 키를 설정한 뒤 POST <공통 경로>/:jobId/retry에 confirmedRequestKey를 보내 재접수할 수 있다.
 그 외 실패의 retry는 409다. 공급자 사용 내역을 확인하고 원인을 해결한 뒤 필요한 경우 새 modelEpoch로 새 요청을 명시적으로 만든다.
 같은 요청을 다시 제출하는 것만으로 실패를 지우거나 유료 분석을 반복하지 않는다.
@@ -42,4 +42,4 @@ pg-boss 전달 재시도는 2회, 5초 간격이며 DB claim은 한 실행만 �
 ## 검증
 기본 테스트는 모형 공급자로 미리보기·확인·범위 검사, 중복 전달, 키 누락·전송 실패, CLI 검토 복원을 확인한다.
 migration이 적용된 전용 DB의 GIT_ANALYZE_TEST_DATABASE_URL을 지정하면 동시 접수·claim, 소유자 격리, 만료 복구를 추가 검사한다.
-실제 공급자 호출·의미적 분석 품질과 pg-boss 프로세스 재시작 검증은 별도 환경에서 수행해야 한다.
+2026-11-27에 전용 PostgreSQL과 별도 pg-boss 워커 프로세스에서 모형 공급자로 재시작을 검증했다. 워커가 꺼진 동안 접수한 두 대기 작업을 시작과 재시작 때 처리했다. 생성 도중 워커를 종료하고 테스트 lease를 만료시킨 작업은 `needs_input`으로 전환됐으며, 동일 요청을 다시 접수했을 때도 생성은 반복되지 않았다. 실제 공급자의 응답 품질은 별도 표본 평가에서 검증한다.

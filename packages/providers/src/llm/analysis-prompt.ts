@@ -5,8 +5,8 @@ import { WORK_ITEM_ANALYSIS_SCHEMA } from '@git-analyze/core';
 
 // Keep the domain schema stricter than the provider's supported generation subset.
 // A fresh analysis cannot grant user confirmation; this branch is excluded on the wire.
-function wireSchema(value: unknown, numberedCitations = false): unknown {
-  if (Array.isArray(value)) return value.map((item) => wireSchema(item, numberedCitations));
+function wireSchema(value: unknown, citations: 'references' | 'numbers' | 'required-numbers' = 'references'): unknown {
+  if (Array.isArray(value)) return value.map((item) => wireSchema(item, citations));
   if (!value || typeof value !== 'object') return value;
   const record = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
@@ -14,17 +14,20 @@ function wireSchema(value: unknown, numberedCitations = false): unknown {
     if (['$schema', '$id', 'uniqueItems', 'minItems', 'maxItems', 'minLength', 'maxLength', 'pattern'].includes(key)) continue;
     if (key === 'const') result.enum = [item];
     else if (key === 'oneOf') result.anyOf = (item as { properties: { status: { const: string } } }[])
-      .filter((branch) => branch.properties.status.const !== 'user_confirmed').map((branch) => wireSchema(branch, numberedCitations));
-    else if (key === 'definitions') result.$defs = wireSchema(item, numberedCitations);
+      .filter((branch) => branch.properties.status.const !== 'user_confirmed').map((branch) => wireSchema(branch, citations));
+    else if (key === 'definitions') result.$defs = wireSchema(item, citations);
     else if (key === '$ref') result.$ref = (item as string).replace('#/definitions/', '#/$defs/');
-    else if (key === 'evidence' && numberedCitations) result.evidence = { type: 'array', items: { type: 'integer' } };
-    else result[key] = wireSchema(item, numberedCitations);
+    else if (key === 'evidence' && citations !== 'references') {
+      const requiresEvidence = citations === 'required-numbers' && (item as { minItems: number }).minItems === 1;
+      result.evidence = { type: 'array', items: { type: 'integer' }, ...(requiresEvidence ? { minItems: 1 } : {}) };
+    } else result[key] = wireSchema(item, citations);
   }
   return result;
 }
 
 export const ANALYSIS_GENERATION_SCHEMA = wireSchema(WORK_ITEM_ANALYSIS_SCHEMA) as Record<string, unknown>;
-export const NUMBERED_CITATION_SCHEMA = wireSchema(WORK_ITEM_ANALYSIS_SCHEMA, true) as Record<string, unknown>;
+export const NUMBERED_CITATION_SCHEMA = wireSchema(WORK_ITEM_ANALYSIS_SCHEMA, 'numbers') as Record<string, unknown>;
+export const REQUIRED_NUMBERED_CITATION_SCHEMA = wireSchema(WORK_ITEM_ANALYSIS_SCHEMA, 'required-numbers') as Record<string, unknown>;
 
 export const EXACT_CITATION_INSTRUCTION = 'Use only the supplied excerpts and their exact sourceRecordId, sourceVersion and locator for citations.';
 export const ANALYSIS_INSTRUCTIONS = [

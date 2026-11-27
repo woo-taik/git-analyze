@@ -1,4 +1,5 @@
 export const ANALYSIS_SCHEMA_VERSION = 'work-item-analysis-v1';
+export const MAX_CLAIM_EVIDENCE_REFERENCES = 20;
 export const ANALYSIS_CLAIM_FIELDS = [
   'problem', 'constraints', 'alternatives', 'decision',
   'implementation', 'results', 'verification', 'contribution',
@@ -22,7 +23,7 @@ function claim(status: 'source_supported' | 'user_confirmed' | 'inferred' | 'mis
     properties: {
       id: identity, text, status: { const: status, type: 'string' },
       evidence: { type: 'array', minItems: status === 'source_supported' ? 1 : 0,
-        maxItems: 20, uniqueItems: true, items: reference },
+        maxItems: MAX_CLAIM_EVIDENCE_REFERENCES, uniqueItems: true, items: reference },
       ...(status === 'user_confirmed' ? { confirmationId: identity } : {}),
     },
   };

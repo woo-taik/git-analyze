@@ -26,7 +26,8 @@ export function analysisHandler(store: AnalysisJobStore, env: NodeJS.ProcessEnv 
         const result = await executeAnalysis(loaded.packet, settings, transmission, apiKey, fetch, request.snapshot.promptVersion);
         outcome = { status: 'succeeded', error: null, result: {
           schemaVersion: 1, status: 'analyzed', createdAt: new Date().toISOString(), source: loaded.source,
-          evidence: request.snapshot.evidence, bindings: loaded.bindings, settings, cache: { hit: false, stored: true, key, enabled: true },
+          evidence: request.snapshot.evidence, evidenceMappingVersion: loaded.evidenceMappingVersion,
+          bindings: loaded.bindings, settings, cache: { hit: false, stored: true, key, enabled: true },
           transmission: prepared.receipt, sentInput: JSON.parse(prepared.input) as unknown, result,
         } };
       }

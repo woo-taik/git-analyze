@@ -62,7 +62,10 @@ export function composeResumeWithTrace(review: ReviewState, context: ReviewConte
       record: review.confirmations.find((record) => record.id === clause.confirmationId),
       event: review.events.find((event) => event.id === clause.confirmationId),
     }, evidence: clause.evidence.map((reference) => {
-      const excerpt = context.packet.excerpts.find((item) => canonicalJson(item.reference) === canonicalJson(reference));
+      const key = canonicalJson(reference);
+      const matches = context.packet.excerpts.filter((item) => canonicalJson(item.reference) === key);
+      if (matches.length > 1) fail('ambiguous_evidence_reference');
+      const excerpt = matches[0];
       if (!excerpt) throw new Error('Missing original excerpt for selected claim');
       return { reference, excerptId: excerpt.id, commitOid: excerpt.commitOid, parentOid: excerpt.parentOid, path: excerpt.path, text: excerpt.text };
     }) }));
